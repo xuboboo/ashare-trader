@@ -11,16 +11,28 @@ import Positions from "@/components/Positions/Positions";
 import Signals from "@/components/Signals/Signals";
 import StatsRow from "@/components/StatsRow/StatsRow";
 import { useFeed } from "@/lib/useFeed";
-import type { SuggestedOrder } from "@/lib/types";
+import type { BrokerStatus, SuggestedOrder } from "@/lib/types";
 
 export default function Page() {
   const feed = useFeed();
   const latest = feed.latest;
   const [error, setError] = useState<string | null>(null);
+  const [broker, setBroker] = useState<BrokerStatus | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
   // 决策的"Xs 前"标签每秒刷新一次就够
   useEffect(() => {
     const id = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+  // QMT sidecar 状态：30s 轮询一次（不可达时按钮自然隐藏）
+  useEffect(() => {
+    const load = () =>
+      fetch(`${(process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3005").replace(/\/+$/, "")}/broker`)
+        .then((r) => (r.ok ? r.json() : null))
+        .then((j) => setBroker(j as BrokerStatus))
+        .catch(() => setBroker(null));
+    load();
+    const id = setInterval(load, 30_000);
     return () => clearInterval(id);
   }, []);
 
@@ -41,6 +53,7 @@ export default function Page() {
   if (feed.meta?.calendarStale) banners.push("交易日历不可用，按周一~周五猜测交易日");
   if (latest && !latest.tradingDay) banners.push(`非交易日（${latest.date}），下面是最近一个交易日的复盘快照`);
   if (latest?.decision?.modelFailed) banners.push("模型本轮失败，已按规则层执行");
+  if (latest?.risk?.buyBlocked) banners.push(`风控闸：${latest.risk.reasons.join("；")}`);
   if (error) banners.push(`操作未完成：${error}`);
 
   return (
@@ -67,7 +80,7 @@ export default function Page() {
           <EquityStrip totals={latest?.totals ?? null} />
         </div>
       </div>
-      <Signals allOrders={orders} onFilled={() => void 0} />
+      <Signals allOrders={orders} onFilled={() => void 0} broker={broker} />
       <Positions positions={latest?.positions ?? []} totals={latest?.totals ?? null} />
       <Ledger fillCount={latest?.totals.fills ?? 0} onError={setError} />
       <div className="cols">

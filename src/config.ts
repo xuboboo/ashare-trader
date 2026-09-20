@@ -35,6 +35,10 @@ export const config = {
   k: num("K", 3),
   maxDailyOpens: num("MAX_DAILY_OPENS", 4),
   stopLossPct: num("STOP_LOSS_PCT", 3),
+  /** 日亏损闸：当日亏损（相对日初权益）达到此百分比停止开仓，次日自动恢复；0 = 关闭 */
+  maxDayLossPct: num("MAX_DAY_LOSS_PCT", 3),
+  /** 回撤闸：权益自峰值回撤达到此百分比停止开仓，创新高后自动恢复；0 = 关闭 */
+  maxDrawdownPct: num("MAX_DRAWDOWN_PCT", 10),
   gapTrimPct: num("GAP_TRIM_PCT", 3),
   /** 次日无条件清仓 */
   forceExitMin: hhmm(env("FORCE_EXIT_AT", "10:00")!, 600),

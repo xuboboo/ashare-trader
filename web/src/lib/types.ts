@@ -139,6 +139,15 @@ export interface TickEvent {
     }[];
   };
   decision: Decision | null;
+  /** 组合级风控闸（日亏损/回撤），只在调用过 decide 的轮次有值 */
+  risk: {
+    buyBlocked: boolean;
+    reasons: string[];
+    dayPnlCny: number;
+    dayLossLimitCny: number;
+    drawdownPct: number;
+    drawdownLimitPct: number;
+  } | null;
   orders: SuggestedOrder[];
   fills: Fill[];
   positions: PositionView[];
@@ -174,6 +183,16 @@ export interface EquityPoint {
 }
 
 export type ConnectionState = "connecting" | "live" | "reconnecting";
+
+/** /broker 的 QMT sidecar 状态 */
+export interface BrokerStatus {
+  reachable: boolean;
+  mode: "mock" | "dry" | "live" | null;
+  xtquant: boolean;
+  connected: boolean;
+  account: string | null;
+  error?: string;
+}
 
 export interface FeedState {
   meta: Meta | null;

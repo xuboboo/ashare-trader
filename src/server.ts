@@ -47,15 +47,19 @@ export function startServer(engine: Engine) {
         const o = engine.pendingOrders.find((x) => x.signalId === body.signalId);
         if (!o) return json({ error: `找不到在途建议单 ${body.signalId}` }, 404);
         if (o.side !== "buy" && o.side !== "sell") return json({ error: "订单方向异常" }, 400);
+        // 用最新快照价（钳在建议限价带内），避免人工确认的间隔里价格走远后拿旧参考价挂单
+        const fresh = engine.latestSnapshot(o.code);
+        const rawPrice = fresh && fresh.price > 0 ? fresh.price : o.priceRef;
+        const price = Math.min(Math.max(rawPrice, o.limitLow), o.limitHigh);
         const ack = await qmt.submit({
           signalId: o.signalId,
           code: o.code,
           side: o.side,
-          price: o.priceRef,
+          price,
           qty: o.qty,
           remark: `ashare-trader ${o.date} ${o.time}`,
         });
-        return json({ ok: ack.accepted, ack, order: { signalId: o.signalId, code: o.code, side: o.side, price: o.priceRef, qty: o.qty } });
+        return json({ ok: ack.accepted, ack, order: { signalId: o.signalId, code: o.code, side: o.side, price, qty: o.qty } });
       }
       if (pathname === "/fills" && req.method === "GET")
         return json({ fills: engine.fillLog(Number(url.searchParams.get("n")) || 50), totals: engine.book.totals() });

@@ -1,7 +1,17 @@
 "use client";
 
 import { useCallback, useEffect, useReducer, useState } from "react";
-import type { ConnectionState, EquityPoint, FeedState, Fill, Meta, PositionView, TickEvent, Totals } from "./types";
+import type {
+  BrokerStatus,
+  ConnectionState,
+  EquityPoint,
+  FeedState,
+  Fill,
+  Meta,
+  PositionView,
+  TickEvent,
+  Totals,
+} from "./types";
 
 export const API_URL = (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3005").replace(/\/+$/, "");
 
@@ -211,6 +221,12 @@ export function useApi() {
     clearError: () => setError(null),
     scan: () => call<TickEvent>("/scan"),
     equity: () => call<{ points: EquityPoint[]; totals: Totals }>("/equity", undefined, "GET"),
+    brokerStatus: () => call<BrokerStatus & { sidecarUrl: string }>("/broker", undefined, "GET"),
+    brokerOrder: (signalId: string) =>
+      call<{ ok: boolean; ack: { accepted: boolean; mode: string | null; brokerOrderId: string | null; error?: string } }>(
+        "/broker/order",
+        { signalId, confirm: "SUBMIT" },
+      ),
     fill: (body: { code: string; side: string; qty: number; price?: number; signalId?: string; note?: string }) =>
       call<{ ok: true; fill: Fill; totals: Totals }>("/fill", body),
     removeFill: (id: string) =>

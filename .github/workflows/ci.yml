@@ -1,0 +1,26 @@
+# CI：每次推送/PR 跑全量测试 + 类型检查 + Web 构建。
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ashare-trader
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - run: bun test
+      - run: bunx tsc --noEmit
+      - name: build web
+        working-directory: ashare-trader/web
+        run: |
+          bun install --frozen-lockfile
+          bun run build

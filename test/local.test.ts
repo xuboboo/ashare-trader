@@ -25,14 +25,14 @@ const state = (candidates: Scored[], over: Partial<SignalState> = {}): SignalSta
   ...over,
 });
 
-/** 人造权重：沿 featureVec 顺序给每个特征定偏好，可预测地操纵概率。 */
-const weights = (w: number[], b = 0): LocalWeights => ({
+/** 人造权重：按特征名给偏好（其余 0），可预测地操纵概率，且对特征表扩展稳健。 */
+const weights = (byName: Record<string, number>, b = 0): LocalWeights => ({
   trainedAt: "test",
   costBps: 37,
   featureNames: LOCAL_FEATURES.map((f) => f.name),
   mean: LOCAL_FEATURES.map(() => 0),
   std: LOCAL_FEATURES.map(() => 1),
-  w,
+  w: LOCAL_FEATURES.map((f) => byName[f.name] ?? 0),
   b,
   metrics: {
     trainSamples: 1,
@@ -92,7 +92,7 @@ describe("本地概率模型 LocalModel", () => {
     const a = cand("002156", "甲");
     const b = cand("603986", "乙", { volumeRatio: 2.6 });
     // factorScore 权重给大正值、其余 0：分高者概率趋近 1（不预设谁分高，动态判断）
-    const w = weights([0, 0, 0, 0, 0, 0, 8], -1);
+    const w = weights({ factorScore: 8 }, -1);
     const higher = a.score >= b.score ? "002156" : "603986";
     const d = await new LocalModel({ weights: w, budgetCny: 50_000 }).decide(state([a, b]));
     expect(d.action).toBe("buy");
@@ -104,7 +104,7 @@ describe("本地概率模型 LocalModel", () => {
   });
 
   test("权重把所有候选压到阈值之下时是 hold，且不是模型失败", async () => {
-    const w = weights([0, 0, 0, 0, 0, 0, -8], -4); // 全部概率趋近 0
+    const w = weights({ factorScore: -8 }, -4); // 全部概率趋近 0
     const d = await new LocalModel({ weights: w, budgetCny: 50_000 }).decide(state([cand("002156", "甲")]));
     expect(d.action).toBe("hold");
     expect(d.picks).toHaveLength(0);
@@ -119,7 +119,7 @@ describe("本地概率模型 LocalModel", () => {
   });
 
   test("闸门关闭不花模型；同一输入概率完全确定", async () => {
-    const w = weights([0, 0, 0, 0, 0, 0, 8], -1);
+    const w = weights({ factorScore: 8 }, -1);
     const m = new LocalModel({ weights: w, budgetCny: 50_000 });
     const closed = await m.decide(state([cand("002156", "甲")], { gate: { allowed: false, reasons: ["跌破 5 日线"] } }));
     expect(closed.action).toBe("hold");
@@ -141,8 +141,8 @@ describe("本地概率模型 LocalModel", () => {
     expect(daily.rejects).toEqual(live.rejects); // 两口径同一套硬筛选结论
     const vd = featureVec(daily);
     const vl = featureVec(live);
-    vd.forEach((v, i) => expect(v).toBeCloseTo(vl[i]!, 6)); // 七个特征一一对应
-    const w = weights([0, 0, 0, 0, 0, 0, 8], -1);
+    vd.forEach((v, i) => expect(v).toBeCloseTo(vl[i]!, 6)); // 全部特征一一对应
+    const w = weights({ factorScore: 8 }, -1);
     const pd = await new LocalModel({ weights: w, budgetCny: 50_000 }).decide(state([daily]));
     const pl = await new LocalModel({ weights: w, budgetCny: 50_000 }).decide(state([live]));
     expect(pd.action).toBe(pl.action);

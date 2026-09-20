@@ -20,8 +20,17 @@ import type { Scored } from "./factors";
 import { FactorModel, type Decision, type Model, type Pick, type SignalState } from "./model";
 import { eligible as pickEligible } from "./jev";
 
+/** 大盘上下文：实盘来自 SignalState.index，训练来自指数日线 —— 两边算出同一个数。 */
+export interface MarketContext {
+  indexPct: number;
+  indexVsMa5Bp: number;
+}
+
 /** 特征表：训练与推理共用同一份定义，顺序即权重向量的顺序。 */
-export const LOCAL_FEATURES: { name: string; get: (c: { features: Scored["features"]; score: number }) => number }[] = [
+export const LOCAL_FEATURES: {
+  name: string;
+  get: (c: { features: Scored["features"]; score: number }, m?: MarketContext) => number;
+}[] = [
   { name: "gainPct", get: (c) => c.features.gainPct },
   { name: "volumeRatio", get: (c) => c.features.volumeRatio },
   { name: "vwapDevBp", get: (c) => c.features.priceVsVwapBps / 100 },
@@ -29,6 +38,24 @@ export const LOCAL_FEATURES: { name: string; get: (c: { features: Scored["featur
   { name: "logAmountYi", get: (c) => Math.log10(Math.max(0.01, c.features.amountYuan / 1e8)) },
   { name: "distToLimitBp", get: (c) => ((c.features.limitUp - c.features.price) / c.features.price) * 1e4 / 100 },
   { name: "factorScore", get: (c) => c.score },
+  // ---- v2：日内结构 ----
+  { name: "gapPct", get: (c) => (c.features.prevClose > 0 ? ((c.features.open - c.features.prevClose) / c.features.prevClose) * 100 : 0) },
+  {
+    name: "dayRangePos",
+    get: (c) => {
+      const range = c.features.high - c.features.low;
+      return range > 0 ? (c.features.price - c.features.low) / range : 0.5;
+    },
+  },
+  // ---- v2：大盘上下文（缺指数时取 0 = 中性）----
+  { name: "indexPct", get: (_c, m) => m?.indexPct ?? 0 },
+  { name: "indexVsMa5Bp", get: (_c, m) => m?.indexVsMa5Bp ?? 0 },
+  // ---- v2：交互项（放量×强度、大盘×个股动量）----
+  { name: "gain_x_volume", get: (c) => c.features.gainPct * Math.max(0, c.features.volumeRatio) },
+  {
+    name: "index_x_gain",
+    get: (c, m) => (m ? (m?.indexPct ?? 0) * Math.sign(c.features.gainPct) : 0),
+  },
 ];
 
 export interface LocalWeights {
@@ -56,8 +83,8 @@ export interface LocalWeights {
 
 export const sigmoid = (z: number): number => 1 / (1 + Math.exp(-z));
 
-export function featureVec(c: { features: Scored["features"]; score: number }): number[] {
-  return LOCAL_FEATURES.map((f) => f.get(c));
+export function featureVec(c: { features: Scored["features"]; score: number }, m?: MarketContext): number[] {
+  return LOCAL_FEATURES.map((f) => f.get(c, m));
 }
 
 /** 标准化 + 线性 + sigmoid。任何非有限值都返回 null，由调用方降级。 */
@@ -135,9 +162,17 @@ export class LocalModel implements Model {
       return { ...d, modelFailed: true, latencyMs: performance.now() - t0 };
     }
 
+    // 大盘上下文：与训练侧（指数日线）同一口径
+    const m: MarketContext | undefined = s.index
+      ? {
+          indexPct: s.index.pct,
+          indexVsMa5Bp: s.index.ma5 ? ((s.index.price / s.index.ma5 - 1) * 1e4) / 100 : 0,
+        }
+      : undefined;
+
     const probs = new Map<string, number>();
     for (const c of list) {
-      const p = probability(featureVec(c), w);
+      const p = probability(featureVec(c, m), w);
       if (p !== null) probs.set(c.features.code, p);
     }
     if (!probs.size) {

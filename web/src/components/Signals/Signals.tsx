@@ -3,17 +3,25 @@
 import { useState } from "react";
 import { fmtCny, fmtInt, fmtPrice, orderLine } from "@/lib/format";
 import { useApi } from "@/lib/useFeed";
-import type { SuggestedOrder } from "@/lib/types";
+import type { BrokerStatus, SuggestedOrder } from "@/lib/types";
 
 const rowKey = (o: SuggestedOrder) => `${o.signalId}@${o.date} ${o.time}`;
+
+interface Props {
+  allOrders: SuggestedOrder[];
+  onFilled: () => void;
+  /** QMT sidecar 状态；null/不可达时不显示推送按钮 */
+  broker: BrokerStatus | null;
+}
 
 /**
  * 建议单：系统的最终产物就是一行行可执行的字段 + 一个回填入口。
  * 一行一单，不用卡片；按钮是文字，不是盒子。
  */
-export default function Signals({ allOrders, onFilled }: { allOrders: SuggestedOrder[]; onFilled: () => void }) {
+export default function Signals({ allOrders, onFilled, broker }: Props) {
   const api = useApi();
   const [copied, setCopied] = useState<string | null>(null);
+  const [pushed, setPushed] = useState<string | null>(null);
   const [form, setForm] = useState({ code: "", side: "buy", qty: "", price: "" });
 
   const copy = (text: string, key: string) => {
@@ -29,6 +37,22 @@ export default function Signals({ allOrders, onFilled }: { allOrders: SuggestedO
   const prefill = (o: SuggestedOrder) =>
     setForm({ code: o.code, side: o.side, qty: String(o.qty), price: String(o.priceRef) });
 
+  /** 推送到 QMT sidecar。二次确认写清楚当前模式：mock/dry 只是记录，live 才是真委托。 */
+  const pushToBroker = async (o: SuggestedOrder) => {
+    const mode = broker?.mode ?? "mock";
+    const confirmed = window.confirm(
+      mode === "live"
+        ? `【真实委托】将向券商提交 ${o.name}(${o.code}) ${o.side === "buy" ? "买入" : "卖出"} ${o.qty} 股。确认继续？`
+        : `向 QMT sidecar（${mode} 模式，不下单）记录 ${o.name}(${o.code}) ${o.qty} 股 @ 建议价。确认？`,
+    );
+    if (!confirmed) return;
+    const r = await api.brokerOrder(o.signalId);
+    if (r) {
+      setPushed(`${o.signalId}:${r.ack.brokerOrderId ?? r.ack.error ?? "已受理"}`);
+      setTimeout(() => setPushed(null), 6000);
+    }
+  };
+
   const submit = () => {
     if (!form.code || !form.qty) return;
     void api
@@ -43,12 +67,17 @@ export default function Signals({ allOrders, onFilled }: { allOrders: SuggestedO
   };
 
   const orders = allOrders.slice(-14).reverse();
+  const brokerUsable = Boolean(broker?.reachable);
 
   return (
     <section className="section">
       <div className="head">
         <h2>建议单</h2>
-        <span className="hint">人工在券商 App 执行，本系统不下达委托</span>
+        <span className="hint">
+          {brokerUsable
+            ? `QMT sidecar ${broker!.mode} 模式${broker!.mode === "live" ? "（真实委托！）" : "（只记录不下单）"}`
+            : "人工在券商 App 执行，本系统不下达委托"}
+        </span>
         <span className="spacer" />
         <button className="btn" onClick={() => void api.scan().then(onFilled)} disabled={api.busy}>
           {api.busy ? "扫描中…" : "立即扫描"}
@@ -100,6 +129,11 @@ export default function Signals({ allOrders, onFilled }: { allOrders: SuggestedO
                     <button className="btn" onClick={() => copy(orderLine(o), rowKey(o))}>
                       {copied === rowKey(o) ? "已复制" : "复制"}
                     </button>
+                    {brokerUsable && o.status === "pending" ? (
+                      <button className="btn" onClick={() => void pushToBroker(o)}>
+                        {pushed?.startsWith(o.signalId) ? pushed.split(":")[1] : "推送"}
+                      </button>
+                    ) : null}
                     {o.status === "pending" ? (
                       <button className="btn btnPrimary" onClick={() => prefill(o)}>
                         回填

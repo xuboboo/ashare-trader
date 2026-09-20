@@ -17,6 +17,7 @@ import { JevModel } from "./jev";
 import { LocalModel } from "./local";
 import { makeBuyOrder, makeExitOrder, tryPaperFill, updateResting, type Clock, type SuggestedOrder } from "./orders";
 import { fetchIndexDaily, fetchIndex, fetchZtPool, fetchSnapshots, quoteAgeSec, type DailyBar, type Snapshot } from "./quotes";
+import { riskBrake, type RiskBrake } from "./risk";
 import { bj, canTrade, hhmmOf, liveQuotes, phaseOf, type Phase, sessionNow } from "./session";
 import { Book, makeFill, round2, type Fill } from "./state";
 import { Universe } from "./universe";
@@ -54,6 +55,8 @@ export interface TickEvent {
   quotes: { ok: number; fails: number; stale: boolean; eodOnly: boolean; quoteDay: string; ageSec: number };
   scan: { scored: number; rejected: number; top: { code: string; name: string; score: number; gainPct: number; volumeRatio: number; priceVsVwapBps: number; reasons: string[] }[] };
   decision: Decision | null;
+  /** 组合级风控闸（日亏损/回撤），只在调用过 decide 的轮次有值 */
+  risk: RiskBrake | null;
   orders: SuggestedOrder[];
   fills: Fill[];
   positions: PositionView[];
@@ -99,6 +102,8 @@ export class Engine {
   private preBuyDate = "";
   /** 上一次盘中买入决策时刻（epoch ms），配合 DECIDE_EVERY_MS 控制节奏 */
   private lastBuyMs = 0;
+  /** 最近一次风控闸判定（挂到事件上，面板可见） */
+  private lastRisk: RiskBrake | null = null;
   private opts: EngineOpts;
 
   constructor(opts: EngineOpts = {}) {
@@ -397,6 +402,7 @@ export class Engine {
       },
       scan: { scored: scored.length, rejected, top },
       decision,
+      risk: this.lastRisk,
       orders: newOrders,
       fills,
       positions: this.positionView(),
@@ -411,6 +417,17 @@ export class Engine {
     const held = [...this.book.positions.values()];
     const buysToday = this.book.openDateCount(clock.date);
     const openSlots = Math.max(0, config.maxDailyOpens - buysToday);
+    // 组合级风控闸：只封新开仓，不封退出（止损/清仓在亏损状态也必须走得掉）
+    const totals = this.book.totals();
+    this.lastRisk = riskBrake({
+      equity: totals.equity,
+      dayStartEquity: this.book.dayStartEquity,
+      peakEquity: this.book.peakEquity,
+      dayLossLimitPct: config.maxDayLossPct,
+      drawdownLimitPct: config.maxDrawdownPct,
+    });
+    const buyAllowed =
+      mode === "buy" && gate.allowed && (this.bias?.allowOpen ?? true) && openSlots > 0 && !this.lastRisk.buyBlocked;
     return this.model.decide({
       date: clock.date,
       time: clock.time,
@@ -420,7 +437,7 @@ export class Engine {
       candidates: scored,
       heldCodes: held.map((p) => p.code),
       allowed: {
-        buy: mode === "buy" && gate.allowed && (this.bias?.allowOpen ?? true) && openSlots > 0,
+        buy: buyAllowed,
         sell: held.some((p) => p.sellable > 0),
       },
       vetoes: this.bias?.vetoes ?? {},

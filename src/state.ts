@@ -68,10 +68,16 @@ export class Book {
   /** 已完成的交易日（日切用） */
   lastDate = "";
   realizedTotal = 0;
+  /** 当前交易日的日初权益（日切时定格），日亏损闸以此为分母 */
+  dayStartEquity = 0;
+  /** 权益历史峰值（含今日），回撤闸以此为分母 */
+  peakEquity = 0;
 
   constructor(cash = config.bankrollCny) {
     this.cash = cash;
     this.initialCash = cash;
+    this.dayStartEquity = cash;
+    this.peakEquity = cash;
   }
 
   async load(): Promise<void> {
@@ -81,6 +87,8 @@ export class Book {
       this.initialCash = j.initialCash ?? this.initialCash;
       this.lastDate = j.lastDate ?? "";
       this.realizedTotal = j.realizedTotal ?? 0;
+      this.dayStartEquity = j.dayStartEquity ?? this.initialCash;
+      this.peakEquity = j.peakEquity ?? this.initialCash;
       this.equityCurve = Array.isArray(j.equityCurve) ? j.equityCurve : [];
       for (const p of j.positions ?? []) this.positions.set(p.code, p);
     } catch {
@@ -107,6 +115,8 @@ export class Book {
           initialCash: this.initialCash,
           lastDate: this.lastDate,
           realizedTotal: this.realizedTotal,
+          dayStartEquity: this.dayStartEquity,
+          peakEquity: this.peakEquity,
           equityCurve: this.equityCurve.slice(-500),
           positions: [...this.positions.values()],
         },
@@ -155,10 +165,12 @@ export class Book {
   /**
    * 日切：进入新交易日时，把昨日冻结的买入解锁为可卖（T+1）。
    * 跨年/跨周都无所谓，只看日期字符串是否变化。
+   * 日切瞬间把当前权益定格为 dayStartEquity（日亏损闸的基准）。
    */
   rollover(date: string): boolean {
     if (!this.lastDate) {
       this.lastDate = date;
+      if (!this.dayStartEquity) this.dayStartEquity = this.totals().equity;
       return false;
     }
     if (this.lastDate === date) return false;
@@ -169,6 +181,7 @@ export class Book {
       }
     }
     this.lastDate = date;
+    this.dayStartEquity = this.totals().equity;
     return true;
   }
 
@@ -266,6 +279,7 @@ export class Book {
     const last = this.equityCurve[this.equityCurve.length - 1];
     if (!last || last.date !== date) this.equityCurve.push(point);
     else this.equityCurve[this.equityCurve.length - 1] = point;
+    if (t.equity > this.peakEquity) this.peakEquity = t.equity;
     return point;
   }
 }

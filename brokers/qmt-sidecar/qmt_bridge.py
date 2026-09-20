@@ -139,6 +139,28 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/orders":
             with state_lock:
                 return self._send({"orders": orders_ledger[-200:]})
+        if self.path == "/fills":
+            if MODE == "live" and xt_trader and xt_account:
+                try:
+                    raw = xt_trader.query_stock_orders(xt_account) or []
+                    fills = [
+                        {
+                            "code": o.stock_code,
+                            "side": "buy" if str(o.order_type) in ("23", "OrderType_Buy") else "sell",
+                            "price": o.price,
+                            "qty": o.volume,
+                            "traded": o.traded_volume,
+                            "status": str(o.order_status),
+                            "brokerOrderId": str(o.order_id),
+                        }
+                        for o in raw
+                    ]
+                    return self._send({"mode": MODE, "fills": fills})
+                except Exception as e:  # noqa: BLE001
+                    return self._send({"mode": MODE, "fills": [], "error": str(e)}, 503)
+            # mock/dry：台账里的"委托"不是成交，如实标注
+            with state_lock:
+                return self._send({"mode": MODE, "fills": [], "note": f"{MODE} 模式没有真实成交，台账见 /orders"})
         return self._send({"error": "not found"}, 404)
 
     def do_POST(self):

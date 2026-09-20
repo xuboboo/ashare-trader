@@ -131,6 +131,8 @@ bun run start
 | `STOP_LOSS_PCT` | 3 | 止损百分比 |
 | `GAP_TRIM_PCT` | 3 | 次日高开超过该值先卖一半 |
 | `FORCE_EXIT_AT` | 10:00 | 次日无条件清仓时刻 |
+| `MAX_DAY_LOSS_PCT` | 3 | 当日亏损（相对日初权益）达到此值停止开仓，次日自动恢复；0 关闭 |
+| `MAX_DRAWDOWN_PCT` | 10 | 权益自峰值回撤达到此值停止开仓，创新高自动恢复；0 关闭 |
 | `COMMISSION_RATE` / `COMMISSION_MIN` | 0.00025 / 5 | 佣金，**按你券商真实档位改** |
 | `STAMP_TAX_RATE` | 0.0005 | 印花税（卖出单边） |
 | `TRANSFER_FEE_RATE` / `EXCHANGE_FEE_RATE` | 0.00001 / 0.000068 | 过户费、经手+证管 |
