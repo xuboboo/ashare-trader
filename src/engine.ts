@@ -14,6 +14,7 @@ import { TradingCalendar } from "./calendar";
 import { featuresFromSnapshot, ma5CloseBefore, marketGate, scoreStock, type Gate, type Scored } from "./factors";
 import { FactorModel, type Decision, type DailyBias, type Model, LlmAdvisory } from "./model";
 import { JevModel } from "./jev";
+import { LocalModel } from "./local";
 import { makeBuyOrder, makeExitOrder, tryPaperFill, updateResting, type Clock, type SuggestedOrder } from "./orders";
 import { fetchIndexDaily, fetchIndex, fetchZtPool, fetchSnapshots, quoteAgeSec, type DailyBar, type Snapshot } from "./quotes";
 import { bj, canTrade, hhmmOf, liveQuotes, phaseOf, type Phase, sessionNow } from "./session";
@@ -70,7 +71,8 @@ export class Engine {
   book = new Book();
   readonly universe = new Universe();
   readonly calendar = new TradingCalendar();
-  private model: Model = config.model === "jev" ? new JevModel() : new FactorModel();
+  private model: Model =
+    config.model === "jev" ? new JevModel() : config.model === "local" ? new LocalModel() : new FactorModel();
   private advisory = new LlmAdvisory();
 
   private history: TickEvent[] = [];

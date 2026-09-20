@@ -56,8 +56,8 @@ export const config = {
   minListDays: num("MIN_LIST_DAYS", 60),
   indexMinAmountYi: num("INDEX_MIN_AMOUNT_YI", 3000),
 
-  /** 决策模型 */
-  model: env("MODEL", "factor") as "factor" | "jev",
+  /** 决策模型：factor = 规则打分（默认）；local = 本地概率模型（scripts/train-model.ts 训练）；jev = TypeSafe 远端 */
+  model: env("MODEL", "factor") as "factor" | "local" | "jev",
   /** TypeSafe 的 System One 模型 Jev：不生成文本，输入 state + 问题，返回带概率的结构化判断 */
   typesafeApiKey: env("TYPESAFE_AI_API_KEY"),
   typesafeBaseUrl: env("TYPESAFE_BASE_URL", "https://api.typesafe.ai/v1")!,

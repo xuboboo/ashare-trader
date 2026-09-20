@@ -96,6 +96,24 @@ bun run start
 
 验证降级与出单逻辑不需要 key：`bun test test/jev.test.ts`（用注入的假回答跑完九种情形）。
 
+## 启用本地概率模型（无需任何 key）
+
+```powershell
+bun run fetch:daily   # 抓本地日线（一次即可，之后可增量重跑）
+bun run train         # 训练 + 留出集评估，写入 data/model.json
+# .env
+MODEL=local
+bun run start
+```
+
+行为要点：
+
+- 与 `jev` 共用同一套筛选、同一个采纳阈值 `JEV_MIN_PROB`、同一个 `Model` 接口；面板上模型名显示 `local`
+- 训练标签 = 与回测同一条出场规则（`src/exit.ts`）算出的"扣全部成本后是否为正"；特征只用日线和快照都能算的字段，回测/实盘同一性有测试守着
+- `data/model.json` 里带着训练时的留出集指标（AUC、采纳后的净期望 bp）。指标差就是差，别自欺——当前因子集的实测结论见 README"三路决策模型"
+- 没有模型文件或 schema 不符 → 降级回规则打分并标 `modelFailed`（和 Jev 没 key 一个待遇）
+- 每次重跑 `bun run fetch:daily` 后再 `bun run train` 即可重训；训练完全确定性（零初始化 + 全量批梯度下降）
+
 ## 参数表（`.env`，全部有代码内默认值）
 
 | 变量 | 默认 | 含义 |

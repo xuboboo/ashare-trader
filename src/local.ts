@@ -1,0 +1,172 @@
+/**
+ * LocalModel：本地概率模型，填补 Jev（TypeSafe System One）的同一个插槽。
+ *
+ * 和 Jev 回答同一个可判定问题：
+ *   "此刻按规则买入 X、次日按固定规则退出、扣除全部成本后，本笔收益为正"的概率是多少？
+ * 区别在于参数不是远端模型给的，而是 scripts/train-model.ts 用本地日线 + 与回测完全
+ * 相同的出场规则（src/exit.ts）训练出来的逻辑回归。三条硬约束与 JevModel 一致：
+ *  1. 只看与规则层同源的 StockFeatures（日线和快照都能算出的字段），不给内幕字段；
+ *  2. 硬否决（闸门/T+1/涨跌停/流动性/预算）不交给模型，模型只给通过筛选的候选排序；
+ *  3. 没有模型文件、schema 不符、特征异常 → 降级回 FactorModel 并标 modelFailed。
+ *
+ * 诚实条款：模型文件里带着训练时的留出集指标（AUC、采纳后的净期望 bp）。
+ * 指标差就是差，面板和本注释都不粉饰——这个项目已经证明过一次"这条 edge 不存在"，
+ * 本地模型的全部意义是把"有没有料"变成一个可测量的数字。
+ */
+import { join } from "node:path";
+import { config } from "./config";
+import { roundTrip } from "./costs";
+import type { Scored } from "./factors";
+import { FactorModel, type Decision, type Model, type Pick, type SignalState } from "./model";
+import { eligible as pickEligible } from "./jev";
+
+/** 特征表：训练与推理共用同一份定义，顺序即权重向量的顺序。 */
+export const LOCAL_FEATURES: { name: string; get: (c: { features: Scored["features"]; score: number }) => number }[] = [
+  { name: "gainPct", get: (c) => c.features.gainPct },
+  { name: "volumeRatio", get: (c) => c.features.volumeRatio },
+  { name: "vwapDevBp", get: (c) => c.features.priceVsVwapBps / 100 },
+  { name: "turnoverPct", get: (c) => c.features.turnoverPct },
+  { name: "logAmountYi", get: (c) => Math.log10(Math.max(0.01, c.features.amountYuan / 1e8)) },
+  { name: "distToLimitBp", get: (c) => ((c.features.limitUp - c.features.price) / c.features.price) * 1e4 / 100 },
+  { name: "factorScore", get: (c) => c.score },
+];
+
+export interface LocalWeights {
+  /** 训练元信息，如实透出给使用者 */
+  trainedAt: string;
+  costBps: number;
+  featureNames: string[];
+  mean: number[];
+  std: number[];
+  w: number[];
+  b: number;
+  metrics: {
+    trainSamples: number;
+    valSamples: number;
+    trainBaseRate: number;
+    valBaseRate: number;
+    valAuc: number;
+    valBrier: number;
+    /** 留出集上按 minProb 采纳后的平均净期望（bp）；这是"有没有料"的那个数字 */
+    valAcceptedNetBps: number | null;
+    valAcceptedCount: number;
+    valMinProb: number;
+  };
+}
+
+export const sigmoid = (z: number): number => 1 / (1 + Math.exp(-z));
+
+export function featureVec(c: { features: Scored["features"]; score: number }): number[] {
+  return LOCAL_FEATURES.map((f) => f.get(c));
+}
+
+/** 标准化 + 线性 + sigmoid。任何非有限值都返回 null，由调用方降级。 */
+export function probability(x: number[], w: LocalWeights): number | null {
+  if (x.length !== w.w.length) return null;
+  let z = w.b;
+  for (let i = 0; i < x.length; i++) {
+    const sd = w.std[i]!;
+    if (!Number.isFinite(sd) || sd <= 0) continue; // 常数特征：标准化后恒 0
+    z += w.w[i]! * ((x[i]! - w.mean[i]!) / sd);
+  }
+  if (!Number.isFinite(z)) return null;
+  return sigmoid(Math.max(-30, Math.min(30, z)));
+}
+
+export class LocalModel implements Model {
+  readonly name = "local";
+  private fallback = new FactorModel();
+  private weightsCache: LocalWeights | null | undefined;
+
+  constructor(
+    private opts: { weights?: LocalWeights | null; dataDir?: string; budgetCny?: number; minProb?: number } = {},
+  ) {}
+
+  private get budgetCny(): number {
+    return this.opts.budgetCny ?? config.sizeCny;
+  }
+
+  private get minProb(): number {
+    return this.opts.minProb ?? config.jevMinProb;
+  }
+
+  /** 权重惰性加载一次；读取失败或 schema 不符都视为"没有模型"。 */
+  private async weights(): Promise<LocalWeights | null> {
+    if (this.weightsCache !== undefined) return this.weightsCache;
+    if (this.opts.weights !== undefined) {
+      this.weightsCache = this.opts.weights;
+      return this.weightsCache;
+    }
+    try {
+      const j = await Bun.file(join(this.opts.dataDir ?? config.dataDir, "model.json")).json();
+      const w = j as LocalWeights;
+      const ok =
+        Array.isArray(w.w) &&
+        Array.isArray(w.mean) &&
+        Array.isArray(w.std) &&
+        Array.isArray(w.featureNames) &&
+        w.featureNames.length === LOCAL_FEATURES.length &&
+        LOCAL_FEATURES.every((f, i) => f.name === w.featureNames[i]);
+      this.weightsCache = ok ? w : null;
+    } catch {
+      this.weightsCache = null;
+    }
+    return this.weightsCache;
+  }
+
+  /** 测试与运维用：强制下次重新读文件。 */
+  resetCache(): void {
+    this.weightsCache = undefined;
+  }
+
+  async decide(s: SignalState): Promise<Decision> {
+    const t0 = performance.now();
+    const list = pickEligible(s, this.budgetCny);
+
+    if (!s.allowed.buy || !s.gate.allowed || s.openSlots <= 0 || list.length === 0) {
+      // 闸门关着或没额度：这是规则层的结论，不需要模型
+      return this.fallback.decide(s);
+    }
+
+    const w = await this.weights();
+    if (!w) {
+      console.warn("[local] 没有可用的 model.json（先跑 bun run scripts/train-model.ts），降级为 FactorModel");
+      const d = await this.fallback.decide(s);
+      return { ...d, modelFailed: true, latencyMs: performance.now() - t0 };
+    }
+
+    const probs = new Map<string, number>();
+    for (const c of list) {
+      const p = probability(featureVec(c), w);
+      if (p !== null) probs.set(c.features.code, p);
+    }
+    if (!probs.size) {
+      console.error("[local] 特征全部异常，降级为 FactorModel");
+      const d = await this.fallback.decide(s);
+      return { ...d, modelFailed: true, latencyMs: performance.now() - t0 };
+    }
+
+    const picks: Pick[] = list
+      .filter((c) => (probs.get(c.features.code) ?? 0) >= this.minProb)
+      .sort((a, b) => (probs.get(b.features.code) ?? 0) - (probs.get(a.features.code) ?? 0))
+      .slice(0, Math.min(s.openSlots, config.k))
+      .map((c) => ({
+        code: c.features.code,
+        name: c.features.name,
+        probability: probs.get(c.features.code) ?? 0,
+        score: c.score,
+        reasons: [...c.reasons, `本地模型判定 ${(100 * (probs.get(c.features.code) ?? 0)).toFixed(0)}%`],
+      }));
+
+    const best = Math.max(...probs.values());
+    return {
+      action: picks.length ? "buy" : "hold",
+      probabilities: { buy: picks.length ? best : 0, sell: 0, hold: picks.length ? 1 - best : 1 },
+      picks,
+      latencyMs: performance.now() - t0,
+      late: false,
+      inputTokens: 0,
+      modelFailed: false,
+    };
+  }
+}

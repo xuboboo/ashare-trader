@@ -17,6 +17,7 @@
  */
 import { join } from "node:path";
 import { config } from "../src/config";
+import { nextDayExit } from "../src/exit";
 import { featuresFromDaily, marketGate, scoreStock, type FactorParams, type Scored } from "../src/factors";
 import { fetchIndexDaily, type DailyBar } from "../src/quotes";
 import { Book, makeFill, round2 } from "../src/state";
@@ -55,7 +56,8 @@ export interface Stock {
   byDate: Map<string, DailyBar>;
 }
 
-async function loadStocks(): Promise<Stock[]> {
+/** 读本地日线（data/daily/*.json），训练脚本与回测共用。 */
+export async function loadStocks(): Promise<Stock[]> {
   const dir = join(config.dataDir, "daily");
   const out: Stock[] = [];
   let estimated = 0;
@@ -194,35 +196,23 @@ export function simulate(input: SimInput): { result: BtResult; log: string[] } {
       if (!p || p.sellable <= 0) continue; // T+1 兜底（正常不会发生）
       const bi = idxOf.get(code)?.get(date) ?? 0;
       const prevBar = s!.bars[bi - 1];
-      const ld = prevBar ? round2(prevBar.close * (1 - limitPct(code, ""))) : 0;
-      const oneLineDown = bar.high === bar.low && bar.close <= ld;
-
-      let exitPrice: number | null = null;
-      let qty = p.sellable;
-      let note = "";
-      const gapPct = ((bar.open - pos.entry) / pos.entry) * 100;
-      // 一次退出可能有两腿：高开先减半、剩下那部分仍然要在当日走完“到点清仓”
-      const legs: { qty: number; price: number; note: string }[] = [];
-      if (bar.low <= pos.stop && bar.open > pos.stop) {
-        legs.push({ qty, price: pos.stop, note: `止损 ${pos.stop}` });
-      } else if (bar.open <= pos.stop) {
-        legs.push({ qty, price: bar.open, note: `跳空开在止损下 ${bar.open}` });
-      } else if (gapPct >= config.gapTrimPct && Math.floor(qty / 2 / 100) * 100 >= 100) {
-        const half = Math.floor(qty / 2 / 100) * 100;
-        legs.push({ qty: half, price: bar.open, note: `高开 ${gapPct.toFixed(1)}% 减半` });
-        legs.push({ qty: p.sellable - half, price: bar.close, note: "剩仓到点清仓(收盘近似)" });
-      } else {
-        legs.push({ qty, price: bar.close, note: "到点清仓(收盘近似)" }); // 日线口径：把“10:00 前清仓”记为收盘价
-      }
-      if (oneLineDown) {
+      const outcome = nextDayExit({
+        next: bar,
+        prevClose: prevBar?.close ?? bar.open,
+        entry: pos.entry,
+        stop: pos.stop,
+        qty: p.sellable,
+        limitPctFrac: limitPct(code, ""),
+      });
+      if (!outcome.legs.length) {
         skippedAtLimit++;
         continue; // 一字跌停卖不出
       }
-      exitPrice = legs[0]!.price;
-      note = legs.map((l) => l.note).join(" + ");
+      const legs = outcome.legs;
+      const exitPrice = legs[0]!.price;
+      const note = outcome.note;
       for (const leg of legs) {
-        qty = leg.qty;
-        exitPrice = leg.price;
+        const qty = leg.qty;
         if (qty < 100) continue;
         const legNotional = round2(pos.entry * qty);
         notionalYuan += legNotional;

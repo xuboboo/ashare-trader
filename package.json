@@ -1,7 +1,7 @@
 {
   "name": "ashare-trader",
   "version": "0.1.0",
-  "description": "A 股 T+1 决策台：Jev / 规则双决策模型 + 严格成本回测 + 人工执行回填",
+  "description": "A 股 T+1 决策台：本地概率模型 / Jev / 规则三路决策 + 严格成本回测 + 人工执行回填",
   "module": "src/index.ts",
   "type": "module",
   "private": true,
@@ -9,6 +9,7 @@
     "start": "bun run src/index.ts",
     "dev": "bun --watch run src/index.ts",
     "fetch:daily": "bun run scripts/fetch-daily.ts",
+    "train": "bun run scripts/train-model.ts",
     "backtest": "bun run scripts/backtest.ts",
     "fill": "bun run scripts/fill.ts",
     "test": "bun test"
