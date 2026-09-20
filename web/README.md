@@ -39,7 +39,7 @@ bun run dev      # http://localhost:3006
 
 **扁平编辑式：整页只有一块白板，其余全部是发丝线分区，没嵌套卡片。**
 
-- 区块用 `.section` + `.head`（小字重标题在左、文字按钮在右），相邻区块之间只一条 `1px --hair`
+- 分区用 `.section` + `.head`（小字重标题在左、文字按钮在右），相邻分区之间只一条 `1px --hair`
 - 数据一律表格，`th/td` 只有横线；数字右对齐 + `font-variant-numeric: tabular-nums`，
   文本列（`.txt`）左对齐，长文本列（`.why`）省略号截断
 - 按钮是**无边框文字 + 下划线**（`.btn` / `.btnPrimary`），不做圆角胶囊

@@ -3,7 +3,7 @@
 ## 启动
 
 ```powershell
-cd e:\jev\ashare-trader
+cd ashare-trader
 bun install
 Copy-Item .env.example .env      # 第一次才需要
 bun run start                    # 后端 :3005

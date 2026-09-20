@@ -1,8 +1,9 @@
 /**
- * 决策模型。保持 jev-trader 的 Model/Decision 形状：出概率、出 action、记延迟、迟到就 hold。
+ * 决策模型。统一形状：出概率、出 action、记延迟，拿不到结果就是 hold。
  *
- * 与 jev 的关键差别：LLM 不进热路径。这里 LlmAdvisory 只在每天盘前调用一次（情绪闸门 + 个股 veto），
- * tick 级的选择全部由 FactorModel 的确定性打分完成。
+ * 硬规定：LLM 不进热路径。LlmAdvisory 只在每天盘前调用一次（情绪闸门 + 个股 veto），
+ * tick 级的选择全部由 FactorModel 的确定性打分完成 —— 大模型推理是秒级，
+ * 而 A 股这边只有日频节奏对得上。
  */
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
@@ -22,7 +23,7 @@ export interface Pick {
 export interface SignalState {
   date: string;
   time: string;
-  /** 决策口径说明，等价于 jev 的 horizonBlocks */
+  /** 决策口径说明，例如"尾盘买入、次日 10:00 前清仓" */
   horizon: string;
   gate: Gate;
   candidates: Scored[];
@@ -38,7 +39,7 @@ export interface Decision {
   probabilities: Record<Action, number>;
   picks: Pick[];
   latencyMs: number;
-  /** 模型没赶上有用（等价 jev 的 late），保留给未来的盘中模型 */
+  /** 本轮模型没赶上/没出结果；规则层恒为 false，字段留给未来的盘中模型 */
   late: boolean;
   inputTokens: number;
   modelFailed: boolean;
