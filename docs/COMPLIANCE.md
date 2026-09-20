@@ -7,10 +7,10 @@
 
 | 事实 | 代码位置 |
 | --- | --- |
-| 没有接入任何券商交易通道（无 QMT / PTrade / 柜台 API） | 仓库内不存在此类依赖，`grep -ri "qmt\|ptrade\|xtquant\|homs" src/` 为空 |
+| 券商通道仅有 **QMT 桥接骨架**（`src/brokers/qmt.ts` + `brokers/qmt-sidecar/qmt_bridge.py`）：默认 `mock`/`dry` 模式不下单；`live` 需 sidecar 侧显式 `QMT_CONFIRM=I-KNOW-THIS-IS-REAL` 且本机已登录 miniQMT；引擎循环内没有任何下单调用点，只有人工 `POST /broker/order` 且必须带 `confirm=SUBMIT` | `server.ts` `/broker*`、`brokers/qmt-sidecar/` |
 | 产出物是一段**给人看的文字**（代码、方向、股数、限价区间、止损、退出时点） | `orders.makeBuyOrder()` → `SuggestedOrder` |
 | 影子成交只写本地账本，不发给任何外部系统 | `orders.tryPaperFill()` + `state.Book` |
-| `PAPER=true` 是唯一执行路径；把它改成 false 也不会下单，因为根本没有发送通道 | `config.paper` |
+| `PAPER=true` 是唯一执行路径；把它改成 false 也不会下单，因为引擎没有任何自动发送通道 | `config.paper` |
 | 写接口（`POST /fill`、`POST /scan`）只改本地文件 | `server.ts` |
 
 **明确不做的事**：不用 easytrader 之类工具模拟点击券商客户端、不接未报备的外部接口、

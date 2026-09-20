@@ -79,6 +79,10 @@ export const config = {
   historySize: 1000,
   dataDir: env("DATA_DIR", "data")!,
 
+  /** 券商通道（QMT sidecar）。默认指向本机；sidecar 决定 mock/dry/live，本进程绝不自动下单。 */
+  qmtSidecarUrl: env("QMT_SIDECAR_URL", "http://127.0.0.1:3011")!,
+  qmtToken: env("QMT_TOKEN", "")!,
+
   /** 时段（Asia/Shanghai 本地分钟数） */
   session: {
     callAuctionStart: hhmm("09:15", 555),

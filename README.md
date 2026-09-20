@@ -108,7 +108,7 @@ bun run scripts/backtest.ts --from=2024-01-01 --sweep   # 36 组参数扫描
 
 ## 接口
 
-只读：`GET /`（元信息 + 最新心跳）、`/history`、`/positions`、`/fills`、`/orders`、`/equity`（权益曲线）、`/events`（SSE）。
+只读：`GET /`（元信息 + 最新心跳）、`/history`、`/positions`、`/fills`、`/orders`、`/equity`（权益曲线）、`/broker`（QMT sidecar 状态）、`/events`（SSE）。
 写（只改本地账本，不产生任何委托）：
 
 | 方法 | 作用 | 备注 |
@@ -117,6 +117,7 @@ bun run scripts/backtest.ts --from=2024-01-01 --sweep   # 36 组参数扫描
 | `POST /fill` | 回填一笔真实成交 | `{code, side, qty, price?, signalId?, note?}` |
 | `POST /fill/remove` | 撤销一笔误回填 | `{id}`；重放剩下的成交，原流水进 `data/voids.log` |
 | `POST /reset` | 清空账本 | 必须带 `{"confirm":"CLEAR"}`；旧 `trades.jsonl`/`positions.json` 先归档 |
+| `POST /broker/order` | 把一张在途建议单推给 QMT sidecar | 必须带 `{"signalId":"...","confirm":"SUBMIT"}`；sidecar 处于 `mock`/`dry` 时只记录不下单，`live` 前置条件见 `docs/COMPLIANCE.md` |
 
 ## 文档
 

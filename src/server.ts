@@ -5,6 +5,7 @@
  * 没有任何路径会向券商下真实委托。
  */
 import { config } from "./config";
+import { QmtBroker } from "./brokers/qmt";
 import type { Engine, TickEvent } from "./engine";
 
 const CORS = { "access-control-allow-origin": "*", "access-control-allow-headers": "*" };
@@ -12,6 +13,7 @@ const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { ...CORS, "content-type": "application/json" } });
 
 export function startServer(engine: Engine) {
+  const qmt = new QmtBroker();
   const clients = new Set<ReadableStreamDefaultController<Uint8Array>>();
   const enc = new TextEncoder();
   const send = (c: ReadableStreamDefaultController<Uint8Array>, type: string, data: unknown) => {
@@ -36,6 +38,25 @@ export function startServer(engine: Engine) {
       if (pathname === "/positions" && req.method === "GET")
         return json({ positions: engine.positionView(), totals: engine.book.totals(), pending: engine.pendingOrders });
       if (pathname === "/orders" && req.method === "GET") return json(engine.pendingOrders);
+      // 券商通道：只有人在浏览器/命令行显式触发才会推送 sidecar；引擎循环里没有任何调用点
+      if (pathname === "/broker" && req.method === "GET")
+        return json({ sidecarUrl: config.qmtSidecarUrl, ...(await qmt.status()) });
+      if (pathname === "/broker/order" && req.method === "POST") {
+        const body = ((await req.json().catch(() => null)) ?? {}) as { signalId?: string; confirm?: string };
+        if (body.confirm !== "SUBMIT") return json({ error: '需要 body {"signalId":"...","confirm":"SUBMIT"}；这是真实委托方向的开关' }, 400);
+        const o = engine.pendingOrders.find((x) => x.signalId === body.signalId);
+        if (!o) return json({ error: `找不到在途建议单 ${body.signalId}` }, 404);
+        if (o.side !== "buy" && o.side !== "sell") return json({ error: "订单方向异常" }, 400);
+        const ack = await qmt.submit({
+          signalId: o.signalId,
+          code: o.code,
+          side: o.side,
+          price: o.priceRef,
+          qty: o.qty,
+          remark: `ashare-trader ${o.date} ${o.time}`,
+        });
+        return json({ ok: ack.accepted, ack, order: { signalId: o.signalId, code: o.code, side: o.side, price: o.priceRef, qty: o.qty } });
+      }
       if (pathname === "/fills" && req.method === "GET")
         return json({ fills: engine.fillLog(Number(url.searchParams.get("n")) || 50), totals: engine.book.totals() });
       // 权益曲线（每个交易日一个点，落盘在 positions.json）：面板的"一周盈亏"视图用
