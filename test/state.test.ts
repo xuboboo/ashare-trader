@@ -111,3 +111,71 @@ describe("T+1 与账本", () => {
     expect(book.positions.get("600000")!.stopPrice).toBe(8.8); // 9.07 * 0.97
   });
 });
+
+describe("撤销成交（重放重建账本）", () => {
+  const sell = (over = {}) =>
+    makeFill({
+      code: "600000",
+      name: "浦发银行",
+      side: "sell",
+      price: 9.5,
+      qty: 1000,
+      date: "2026-09-21",
+      time: "10:00",
+      kind: "manual",
+      ...over,
+    });
+
+  test("重放结果与顺序应用完全一致", () => {
+    const a = new Book(100_000);
+    a.rollover("2026-09-18");
+    a.applyFill(buy({ qty: 1000 }));
+    a.rollover("2026-09-21");
+    a.applyFill(sell({ qty: 400, time: "09:40" }));
+    const b = new Book(100_000);
+    b.rebuild(a.fills);
+    expect(b.cash).toBe(a.cash);
+    expect(b.realizedTotal).toBe(a.realizedTotal);
+    const pa = a.positions.get("600000")!;
+    const pb = b.positions.get("600000")!;
+    expect(pb.qty).toBe(pa.qty);
+    expect(pb.sellable).toBe(pa.sellable);
+    expect(pb.frozen).toBe(pa.frozen);
+    expect(pb.feesPaid).toBe(pa.feesPaid);
+  });
+
+  test("撤销唯一一笔买入 → 回到初始现金、空仓", () => {
+    const book = new Book(100_000);
+    book.rollover("2026-09-18");
+    book.applyFill(buy());
+    expect(book.positions.size).toBe(1);
+    book.rebuild(book.fills.filter((f) => f.id !== book.fills[0]!.id));
+    expect(book.positions.size).toBe(0);
+    expect(book.cash).toBe(100_000);
+    expect(book.realizedTotal).toBe(0);
+    expect(book.fills).toHaveLength(0);
+  });
+
+  test("撤销中间一笔：剩下的重放仍然自洽", () => {
+    const book = new Book(100_000);
+    book.rollover("2026-09-18");
+    book.applyFill(buy({ qty: 1000 })); // 1000 股 @9.07
+    book.rollover("2026-09-21");
+    book.applyFill(sell({ qty: 400, price: 9.5, time: "09:40" }));
+    book.applyFill(sell({ qty: 600, price: 8.6, time: "10:00" }));
+    expect(book.positions.size).toBe(0);
+
+    const last = book.fills[2]!;
+    book.rebuild(book.fills.filter((f) => f.id !== last.id));
+    const p = book.positions.get("600000")!;
+    expect(book.fills).toHaveLength(2);
+    expect(p.qty).toBe(600);
+    expect(p.sellable).toBe(600); // 跨日已解锁
+    expect(p.frozen).toBe(0);
+    // 全账自洽：权益 = 本金 + 已实现 + 浮动
+    p.lastPrice = 9.07;
+    const t = book.totals();
+    expect(t.equity).toBeCloseTo(t.cash + 600 * 9.07, 2);
+    expect(t.realized).toBeCloseTo(book.realizedTotal, 2);
+  });
+});

@@ -8,6 +8,8 @@
  * 其余时段只做行情心跳、影子撮合与净值标记。
  */
 import { config } from "./config";
+import { mkdir } from "node:fs/promises";
+import { basename, join } from "node:path";
 import { TradingCalendar } from "./calendar";
 import { featuresFromSnapshot, ma5CloseBefore, marketGate, scoreStock, type Gate, type Scored } from "./factors";
 import { createModel, type Decision, type DailyBias, LlmAdvisory } from "./model";
@@ -63,7 +65,8 @@ export interface EngineOpts {
 }
 
 export class Engine {
-  readonly book = new Book();
+  /** 可以被清空重建，所以不是 readonly */
+  book = new Book();
   readonly universe = new Universe();
   readonly calendar = new TradingCalendar();
   private model = createModel();
@@ -469,6 +472,64 @@ export class Engine {
     // round() 自己会把心跳 attach 到历史与 SSE，这里再 attach 一次就是重复播报
     await this.round("已回填成交");
     return fill;
+  }
+
+  /** 成交流水（最新的在后），给仪表盘的“成交与账本”区用 */
+  fillLog(limit = 50): Fill[] {
+    return this.book.fills.slice(-limit);
+  }
+
+  /**
+   * 撤销一笔成交（误回填、或想清掉一个不存在的持仓）。重放剩下的成交重建账本，
+   * 所以现金/可卖/冻结/已实现盈亏始终自洽；原流水归档到 data/voids.log，不隐式硬删。
+   */
+  async removeFill(id: string): Promise<Fill | null> {
+    const idx = this.book.fills.findIndex((f) => f.id === id);
+    if (idx < 0) return null;
+    const removed = this.book.fills[idx]!;
+    const rest = this.book.fills.filter((_, i) => i !== idx);
+    this.book.rebuild(rest);
+    await this.book.rewriteTrades();
+    await this.book.save();
+    await this.appendVoid(`撤销 ${removed.id} :: ${JSON.stringify(removed)}`);
+    await this.round(`已撤销成交 ${removed.code} ${removed.side} ${removed.qty}@${removed.price}`);
+    return removed;
+  }
+
+  /**
+   * 清空账本：先把 trades.jsonl / positions.json 归档到 data/archive/<时间戳>/，
+   * 再重建一个空账本（现金回到参考本金）。归档不是可选项 —— 留痕迹比删干净重要。
+   */
+  async clearBook(): Promise<{ removed: number; archived: string | null }> {
+    const removed = this.book.fills.length;
+    const files = [join(config.dataDir, "trades.jsonl"), join(config.dataDir, "positions.json")];
+    const exists = await Promise.all(files.map((f) => Bun.file(f).exists()));
+    const present = files.filter((_, i) => exists[i]);
+    let archived: string | null = null;
+    if (present.length) {
+      const stamp = clockNow().date.replace(/-/g, "") + "-" + String(Date.now());
+      const dir = join(config.dataDir, "archive", stamp);
+      await mkdir(dir, { recursive: true });
+      for (const f of present) await Bun.write(join(dir, basename(f)), await Bun.file(f).arrayBuffer());
+      archived = dir;
+    }
+    this.book = new Book(config.bankrollCny);
+    this.book.rollover(clockNow().date);
+    this.pending.clear();
+    await this.book.rewriteTrades();
+    await this.book.save();
+    await this.appendVoid(`清空账本 ${removed} 笔成交${archived ? `，已归档到 ${archived}` : ""}`);
+    await this.round(`账本已清空（${removed} 笔）`);
+    return { removed, archived };
+  }
+
+  /** 不可逆操作都要在这里留一行本地痕迹 */
+  private async appendVoid(line: string): Promise<void> {
+    const file = join(config.dataDir, "voids.log");
+    await mkdir(config.dataDir, { recursive: true });
+    const prev = (await Bun.file(file).exists()) ? await Bun.file(file).text() : "";
+    const c = clockNow();
+    await Bun.write(file, prev + `${c.date} ${c.time}  ${line}\n`);
   }
 
   positionView(): PositionView[] {

@@ -37,7 +37,7 @@ bun run dev                      # 仪表盘 http://localhost:3006
 三条验证命令：
 
 ```powershell
-bun test                                     # 60 pass / 0 fail
+bun test                                     # 63 pass / 0 fail
 bun run scripts/probe-latency.ts             # 各行情源的往返延迟与数据新鲜度
 bun run scripts/backtest.ts --from=2024-01-01 --sweep   # 36 组参数扫描
 ```
@@ -45,12 +45,26 @@ bun run scripts/backtest.ts --from=2024-01-01 --sweep   # 36 组参数扫描
 ## 日常怎么用
 
 1. **14:40 前**看一眼"大盘与候选"：闸门关着就不动手，开着就看候选表
-2. 出建议单后，**在券商 App 里手工下单**（卡片上有"复制下单指令"，一行字直接可抄）
+2. 出建议单后，**在券商 App 里手工下单**（行里点"复制"，一行字直接可粘）
 3. 成交了立刻回填：仪表盘表单、`bun run scripts/fill.ts 002156 buy 800 "@61.40"`、或 `POST /fill`
 4. 次日 9:30-10:00 按系统提示的退出动作走（高开减半 / 跌破止损 / 到点清仓）
 5. 收盘后 `POST /scan` 复盘，或 `bun run scripts/backtest.ts` 重跑统计
+6. **回填错了不要紧**："成交与账本"区里每行有"撤销"（重放剩下的成交重建账本），
+   整本想重来就点"清空账本"（先归档到 `data/archive/` 再清零）；CLI 对应 `--undo=<id>` 与 `--reset`
 
 细节（参数含义、故障排查、常见误操作）见 [docs/USAGE.md](docs/USAGE.md)。
+
+## 接口
+
+只读：`GET /`（元信息 + 最新心跳）、`/history`、`/positions`、`/fills`、`/orders`、`/events`（SSE）。
+写（只改本地账本，不产生任何委托）：
+
+| 方法 | 作用 | 备注 |
+| --- | --- | --- |
+| `POST /scan` | 立即跑一次选股 | 收盘后也能跑（复盘），但**不会伪造成交** |
+| `POST /fill` | 回填一笔真实成交 | `{code, side, qty, price?, signalId?, note?}` |
+| `POST /fill/remove` | 撤销一笔误回填 | `{id}`；重放剩下的成交，原流水进 `data/voids.log` |
+| `POST /reset` | 清空账本 | 必须带 `{"confirm":"CLEAR"}`；旧 `trades.jsonl`/`positions.json` 先归档 |
 
 ## 文档
 
@@ -77,11 +91,11 @@ src/
   factors.ts    因子打分 + 大盘闸门；日线口径与快照口径共用同一个 scoreStock
   model.ts      FactorModel（默认，毫秒级）+ LlmAdvisory（仅日频：情绪闸门 + 个股 veto）
   orders.ts     建议单生成 + 纸面撮合（观测价成交、限价钳制、一字板不成交）
-  state.ts      Book：T+1 可卖/冻结、费用按比例结转、权益曲线、JSON 持久化
+  state.ts      Book：T+1 可卖/冻结、费用按比例结转、权益曲线、rebuild 重放、JSON 持久化
   engine.ts     主循环：单轮在途、三个调度点、新鲜度门控、心跳事件
-  server.ts     Bun.serve：/ /history /positions /orders /scan /fill /events(SSE)
+  server.ts     Bun.serve：/ /history /positions /fills /orders /scan /fill /fill/remove /reset /events(SSE)
 scripts/        once · probe · probe-latency · fetch-daily · backtest · fill
-test/           8 个文件 60 个用例（含契约测试与回测/实盘一致性测试）
+test/           8 个文件 63 个用例（含契约测试、回测/实盘一致性、账本重放自洽）
 web/            Next.js 仪表盘
 data/           本地账本、日线、回测产物（全部 gitignore）
 ```

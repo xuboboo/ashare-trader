@@ -38,9 +38,9 @@
 | `factors.ts` | `StockFeatures`（两口径共同的最小输入）+ `scoreStock()` + `marketGate()` | 见下方"一致性契约" |
 | `model.ts` | `FactorModel`（出概率与 picks）、`LlmAdvisory`（日频情绪闸门 + 个股 veto） | LLM 不进热路径，所以它不是 `Model` 而是旁路顾问 |
 | `orders.ts` | 建议单生成、`updateResting` 逐轮观察区间、`tryPaperFill` 影子撮合 | 撮合的保守性全在这一个函数里，便于审计 |
-| `state.ts` | `Book`：T+1 `sellable`/`frozen`、买入费用按比例结转、权益曲线、JSON 持久化 | 账本必须能被回测、CLI 回填、HTTP 回填三条路共用 |
+| `state.ts` | `Book`：T+1 `sellable`/`frozen`、买入费用按比例结转、权益曲线、`rebuild()` 重放、JSON 持久化 | 账本必须能被回测、CLI 回填、HTTP 回填三条路共用；撤销靠重放而不是反向数学 |
 | `engine.ts` | 主循环、三个调度点、新鲜度门控、降级、心跳事件 | 唯一有状态与时序的地方 |
-| `server.ts` | `GET /`、`/history`、`/positions`、`/orders`、`/events`(SSE)、`POST /scan`、`POST /fill` | 写接口只改本地账本，不碰任何券商通道 |
+| `server.ts` | `GET /`、`/history`、`/positions`、`/fills`、`/orders`、`/events`(SSE)、`POST /scan`、`POST /fill`、`POST /fill/remove`、`POST /reset` | 写接口只改本地账本，不碰任何券商通道；`/reset` 必须带显式 confirm |
 
 ## 心跳事件 `TickEvent`
 
@@ -96,9 +96,18 @@
 4. **接真实通道**（Phase 5，需先做券商程序化报备）：把 `orders.ts` 的纸面撮合换成
    `brokers/qmt.ts` 适配层，`state.ts` 的账本改为以券商成交回报为准 —— 账本与会计层不用动
 
-## 端口与本地状态
+## 本地状态与可逆性
 
-后端 `3005`、前端 `3006`（刻意避开 jev-trader 的 `3001` / `3000`）。
+端口：后端 `3005`、前端 `3006`（刻意避开 jev-trader 的 `3001` / `3000`）。
 `data/` 下全部是本地状态且已 gitignore：`positions.json`（账本）、`trades.jsonl`（成交流水）、
-`cache/universe-<date>.json`、`daily/<code>.json`、`llm/<date>.json`、`backtest.*`、`sweep.tsv`。
-删掉 `positions.json` + `trades.jsonl` 并重启即等于清空账本。
+`voids.log`（撤销/清空痕迹）、`archive/<时间戳>/`（清空前的旧账本）、`cache/universe-<date>.json`、
+`daily/<code>.json`、`llm/<date>.json`、`backtest.*`、`sweep.tsv`。
+
+两个破坏性操作都要求显式确认且留痕迹：
+
+- **撤销一笔成交**：`Book.rebuild(剩下的)` 重放重建 → 现金/可卖/冻结/已实现盈亏永远自洽；
+  原成交整行追写到 `data/voids.log`
+- **清空账本**：先把 `trades.jsonl` + `positions.json` 复制进 `data/archive/<时间戳>/`，再重建空账本；
+  HTTP 层不带 `{"confirm":"CLEAR"}` 直接 400
+
+删文件只是最后手段，不再是唯一选项。

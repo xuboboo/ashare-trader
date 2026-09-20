@@ -22,7 +22,8 @@ bun run dev      # http://localhost:3006
 
 - `src/lib/types.ts` —— 与后端 `src/engine.ts` 的 `TickEvent` 一一对应的线上类型
 - `src/lib/useFeed.ts` —— SSE hook：`snapshot` / `tick` / `ping`、1000 条窗口、**按 seq 去重**、
-  1s→10s 退避重连、`connection` 状态、`avgLatencyMs`；`useApi()` 封装 `POST /scan` 与 `POST /fill`
+  1s→10s 退避重连、`connection` 状态、`avgLatencyMs`；`useApi()` 封装 `POST /scan`、`POST /fill`、
+  `POST /fill/remove`、`POST /reset`、`GET /fills`
 - `src/lib/format.ts` —— 金额/百分比/bps 格式化，`orderLine()` 出可复制的下单指令，`fillCommand()` 出可复制的回填命令，
   `phaseCn()` 时段中文化
 - `src/app/globals.css` —— 设计变量与全部组件样式。注意 A 股习惯 **红涨绿跌**，与美股相反
@@ -30,6 +31,7 @@ bun run dev      # http://localhost:3006
 - `src/components/StatsRow` —— 一行密排数字：指数、成交额、权益、盈亏、持仓、成交、快照覆盖、**行情延迟**、运行时长
 - `src/components/Signals` —— 建议单表格（一行一单）+ 底部内联回填表单
 - `src/components/Positions` —— 持仓表格：可卖 / 今日买入分列，止损与浮动盈亏
+- `src/components/Ledger` —— 成交与账本表格：每行可「撤销」（重放重建账本），右上角「清空账本」（两次 confirm）
 - `src/components/FlowChart` —— 上证折线 + MA5、大盘闸门否决理由、候选排名表
 - `src/components/Feed` —— 心跳流，一行一轮
 

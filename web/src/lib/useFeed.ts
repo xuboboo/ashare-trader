@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useReducer, useState } from "react";
-import type { ConnectionState, FeedState, Meta, PositionView, TickEvent, Totals } from "./types";
+import type { ConnectionState, FeedState, Fill, Meta, PositionView, TickEvent, Totals } from "./types";
 
 export const API_URL = (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3005").replace(/\/+$/, "");
 
@@ -177,13 +177,13 @@ export function useApi() {
   const [error, setError] = useState<string | null>(null);
 
   const call = useCallback(
-    async <T,>(path: string, body?: unknown): Promise<T | null> => {
+    async <T,>(path: string, body?: unknown, method: "POST" | "GET" = "POST"): Promise<T | null> => {
       setBusy(true);
       setError(null);
       try {
         const r = await fetch(`${API_URL}${path}`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
+          method,
+          headers: body === undefined ? {} : { "content-type": "application/json" },
           body: body === undefined ? undefined : JSON.stringify(body),
           signal: AbortSignal.timeout(20_000),
         });
@@ -206,8 +206,12 @@ export function useApi() {
     clearError: () => setError(null),
     scan: () => call<TickEvent>("/scan"),
     fill: (body: { code: string; side: string; qty: number; price?: number; signalId?: string; note?: string }) =>
-      call<{ ok: true; fill: unknown; totals: Totals }>("/fill", body),
-    positions: () => call<{ positions: PositionView[]; totals: Totals }>("/positions"),
+      call<{ ok: true; fill: Fill; totals: Totals }>("/fill", body),
+    removeFill: (id: string) =>
+      call<{ ok: true; removed: Fill; totals: Totals }>("/fill/remove", { id }),
+    resetBook: () => call<{ ok: true; removed: number; archived: string | null }>("/reset", { confirm: "CLEAR" }),
+    fills: () => call<{ fills: Fill[]; totals: Totals }>("/fills", undefined, "GET"),
+    positions: () => call<{ positions: PositionView[]; totals: Totals }>("/positions", undefined, "GET"),
   };
 }
 

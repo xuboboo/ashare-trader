@@ -1,8 +1,10 @@
 "use client";
 
+import { useState } from "react";
 import Feed from "@/components/Feed/Feed";
 import FlowChart from "@/components/FlowChart/FlowChart";
 import Header from "@/components/Header/Header";
+import Ledger from "@/components/Ledger/Ledger";
 import Positions from "@/components/Positions/Positions";
 import Signals from "@/components/Signals/Signals";
 import StatsRow from "@/components/StatsRow/StatsRow";
@@ -12,6 +14,7 @@ import type { SuggestedOrder } from "@/lib/types";
 export default function Page() {
   const feed = useFeed();
   const latest = feed.latest;
+  const [error, setError] = useState<string | null>(null);
 
   // 建议单散落在各个心跳里，按 signalId 汇总；成交状态以最新一次上报为准。
   // 键带上日期与时刻：后端重启后 signalId 会从 0001 重新计数，只用 id 会撞车
@@ -26,6 +29,7 @@ export default function Page() {
   if (feed.meta?.calendarStale) banners.push("交易日历不可用，按周一~周五猜测交易日");
   if (latest && !latest.tradingDay) banners.push(`非交易日（${latest.date}），下面是最近一个交易日的复盘快照`);
   if (latest?.decision?.modelFailed) banners.push("模型本轮失败，已按 hold 处理");
+  if (error) banners.push(`操作未完成：${error}`);
 
   return (
     <div className="card">
@@ -38,6 +42,7 @@ export default function Page() {
       ))}
       <Signals allOrders={orders} onFilled={() => void 0} />
       <Positions positions={latest?.positions ?? []} totals={latest?.totals ?? null} />
+      <Ledger fillCount={latest?.totals.fills ?? 0} onError={setError} />
       <div className="cols">
         <div className="col">
           <FlowChart events={feed.events} latest={latest} />

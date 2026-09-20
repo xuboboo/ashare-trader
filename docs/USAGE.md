@@ -55,6 +55,28 @@ Invoke-RestMethod -Method Post http://localhost:3005/fill -ContentType 'applicat
 
 > PowerShell 里 `@61.40` 必须加引号，否则被当成 splatting 运算符报错。
 
+## 改错：撤销一笔 / 清空账本
+
+回填错了、或者昨天手滑造了一个不存在的持仓，不必去删文件：
+
+| 入口 | 撤销一笔 | 清空账本 |
+| --- | --- | --- |
+| 仪表盘 | 「成交与账本」每行末尾的「撤销」（有 confirm） | 该区右上角「清空账本」（两次 confirm） |
+| 命令行 | `bun run scripts/fill.ts --undo=<成交id>` | `bun run scripts/fill.ts --reset` |
+| HTTP | `POST /fill/remove {"id":"..."}` | `POST /reset {"confirm":"CLEAR"}` |
+
+**为什么不会把账算歪**：撤销不是做反向数学，而是 `Book.rebuild()` —— 把**剩下的**成交按时间重放一遍，
+现金、可卖/冻结、费用分摊、已实现盈亏全部从头推演，因此始终自洽
+（`test/state.test.ts` 的"撤销成交（重放重建账本）"三个用例钉住了这一点，包括撤销中间那笔部分卖出）。
+
+**不会隐式硬删**：
+- 撤销的原流水追写到 `data/voids.log`（一行一条，含完整 JSON）
+- 清空前 `trades.jsonl` 与 `positions.json` 会先复制到 `data/archive/<时间戳>/`
+- `/reset` 不带 `{"confirm":"CLEAR"}` 直接返回 400，防一个 curl 误伤
+
+成交 id 格式为 `YYYYMMDD-HHMM-代码-方向`，由 `GET /fills` 返回（在仪表盘上点「撤销」不需要手填 id）；
+命令行要用 `--undo` 时先 `Invoke-RestMethod http://localhost:3005/fills | % { $_.fills.id }` 拿。
+
 ## 参数表（`.env`，全部有代码内默认值）
 
 | 变量 | 默认 | 含义 |
@@ -113,10 +135,12 @@ bun run scripts/once.ts                                  # 只跑一轮，看链
 | `git log` / GitHub 上中文变 `?` | 用 UTF-8 文件传中文：`git commit -F msg.txt`；调 GitHub API 时把 body 转成 `[Text.Encoding]::UTF8.GetBytes($json)` 再发 |
 | 端口被占用 | `Get-NetTCPConnection -LocalPort 3005,3006 -State Listen` 反查 `OwningProcess` 后 `Stop-Process` |
 
-## 清账本 / 换环境
+## 重置环境
+
+撤一笔或清账本都用上面的入口，不必手动删文件。确实要重置到空目录：
 
 ```powershell
-Remove-Item data\positions.json, data\trades.jsonl     # 清空账本（重启后端生效）
+Remove-Item data\positions.json, data\trades.jsonl     # 先自己归档一份再删更稳
 Remove-Item data\cache -Recurse                        # 重新拉股票池
 Remove-Item data\llm -Recurse                          # 让 LLM 重新判断（当天缓存会复用）
 ```

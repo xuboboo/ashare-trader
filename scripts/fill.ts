@@ -1,10 +1,12 @@
 /**
- * 命令行回填一笔你在券商 App 里真实成交的单。
+ * 命令行回填一笔你在券商 App 里真实成交的单，以及两个维护操作。
  * 用法：
  *   bun run scripts/fill.ts 600000 buy 3000 @12.34
  *   bun run scripts/fill.ts 600000 sell 3000 @12.90 --note="次日10点清仓"
  *   bun run scripts/fill.ts 002156 buy 800            # 不给价则用引擎的最新快照
- * 服务在跑时走 POST /fill（账本与仪表盘同步）；没在跑则直接改本地账本。
+ *   bun run scripts/fill.ts --undo=20260921-0935-002156-buy   # 撤销一笔误回填
+ *   bun run scripts/fill.ts --reset                   # 清空账本（旧账本自动归档）
+ * 服务在跑时走 HTTP（账本与仪表盘同步）；没在跑则直接改本地账本。
  */
 import { config } from "../src/config";
 import { Book, makeFill } from "../src/state";
@@ -15,6 +17,30 @@ async function main() {
   const argv = process.argv.slice(2);
   const positional = argv.filter((a) => !a.startsWith("--"));
   const opt = (k: string) => argv.find((a) => a.startsWith(`--${k}=`))?.split("=").slice(1).join("=");
+
+  // 两种维护操作：--undo=<成交id> 撤销一笔，--reset 清空账本
+  const undo = opt("undo");
+  if (undo || argv.includes("--reset")) {
+    const path = undo ? "/fill/remove" : "/reset";
+    const body = undo ? { id: undo } : { confirm: "CLEAR" };
+    try {
+      const r = await fetch(`http://localhost:${config.port}${path}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(15_000),
+      });
+      const j = (await r.json()) as any;
+      if (!r.ok) throw new Error(String(j?.error ?? `HTTP ${r.status}`));
+      if (undo) console.log(`已撤销 ${undo}：剩下的成交已重放重建账本。权益 ${j.totals.equity} 元，持仓 ${j.totals.positions} 只`);
+      else console.log(`已清空 ${j.removed} 笔成交${j.archived ? `，旧账本归档到 ${j.archived}` : ""}。权益 ${j.totals.equity} 元`);
+      return;
+    } catch (e) {
+      console.log(`服务没在跑或操作失败：${(e as Error).message}`);
+      console.log(`起后端再试：bun run start（:${config.port}）`);
+      process.exit(1);
+    }
+  }
 
   const code = positional[0]?.trim();
   const side = positional[1]?.trim().toLowerCase() as Side | undefined;

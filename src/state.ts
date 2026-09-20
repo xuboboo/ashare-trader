@@ -123,6 +123,35 @@ export class Book {
     await Bun.write(file, prev + JSON.stringify(fill) + "\n");
   }
 
+  /** 用内存里的成交重写流水（撤销一笔后用它保证流水与账本不会两张皮） */
+  async rewriteTrades(): Promise<void> {
+    await mkdir(config.dataDir, { recursive: true });
+    await Bun.write(tradeFile(), this.fills.map((f) => JSON.stringify(f)).join("\n") + (this.fills.length ? "\n" : ""));
+  }
+
+  /**
+   * 从给定成交重建整个账本（现金、持仓、可卖/冻结、已实现盈亏）。
+   * 撤销一笔成交的正确做法是“重放剩下的”，而不是做反向数学 —— 后者一旦
+   * 遇到部分卖出、费用分摊就会算出不平的账。
+   */
+  rebuild(fills: Fill[], cashAtStart = this.initialCash): void {
+    const input = [...fills]; // applyFill 会 push 进 this.fills，先拿副本避免自引用
+    this.cash = cashAtStart;
+    this.initialCash = cashAtStart;
+    this.positions.clear();
+    this.realizedTotal = 0;
+    this.equityCurve = [];
+    this.fills = [];
+    this.lastDate = "";
+    const sorted = input.sort(
+      (a, b) => `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`) || a.ts - b.ts,
+    );
+    for (const f of sorted) {
+      this.rollover(f.date);
+      this.applyFill(f);
+    }
+  }
+
   /**
    * 日切：进入新交易日时，把昨日冻结的买入解锁为可卖（T+1）。
    * 跨年/跨周都无所谓，只看日期字符串是否变化。
