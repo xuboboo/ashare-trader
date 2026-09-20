@@ -466,7 +466,8 @@ export class Engine {
     this.book.applyFill(fill);
     await this.book.appendFill(fill);
     await this.book.save();
-    this.attach(await this.round("已回填成交"));
+    // round() 自己会把心跳 attach 到历史与 SSE，这里再 attach 一次就是重复播报
+    await this.round("已回填成交");
     return fill;
   }
 
