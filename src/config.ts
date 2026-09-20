@@ -27,6 +27,8 @@ export const config = {
   quoteStaleSec: num("QUOTE_STALE_SEC", 30),
   /** true = 只用日频（盘前一次出信号）。实时链路连续故障时引擎会自动置为 true。 */
   eodOnly: bool("EOD_ONLY"),
+  /** eodOnly 恢复探测间隔（毫秒）：降级期间每隔这么久试一次实时链路，成功自动恢复 */
+  eodRecoverMs: num("EOD_RECOVER_MS", 300_000),
 
   /** 账簿与风控 */
   paper: bool("PAPER", true),

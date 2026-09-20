@@ -78,6 +78,8 @@ export interface LocalWeights {
     valAcceptedNetBps: number | null;
     valAcceptedCount: number;
     valMinProb: number;
+    /** 阈值扫描：各阈值下的采纳数与平均净期望，用于选择 JEV_MIN_PROB */
+    thresholdSweep?: { p: number; n: number; netBps: number | null }[];
   };
 }
 

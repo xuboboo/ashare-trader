@@ -247,6 +247,16 @@ const acceptedIdx = valP.map((pp, i) => (pp >= minProb ? i : -1)).filter((i) => 
 const valAcceptedNetBps = acceptedIdx.length ? acceptedIdx.reduce((s, k) => s + val[k]!.netBps, 0) / acceptedIdx.length : null;
 console.log(`留出集    p ≥ ${minProb} 采纳 ${acceptedIdx.length}/${val.length}` +
   ` 平均净期望 ${valAcceptedNetBps === null ? "n/a" : valAcceptedNetBps.toFixed(1) + "bp"}`);
+
+// 阈值扫描：MODEL=local 的采纳阈值该定在哪，看这张表而不是拍脑袋
+console.log("阈值扫描  阈值 -> 采纳数 / 平均净期望 bp（留出集）");
+const thresholdSweep: { p: number; n: number; netBps: number | null }[] = [];
+for (let p = 0.3; p <= 0.7001; p += 0.05) {
+  const idx = valP.map((pp, i) => (pp >= p ? i : -1)).filter((i) => i >= 0);
+  const net = idx.length ? idx.reduce((s, k) => s + val[k]!.netBps, 0) / idx.length : null;
+  thresholdSweep.push({ p: Math.round(p * 100) / 100, n: idx.length, netBps: net });
+  console.log(`  p ≥ ${p.toFixed(2)}  ${String(idx.length).padStart(5)}  ${net === null ? "n/a" : net.toFixed(1)}`);
+}
 console.log("权重（标准化尺度）：");
 LOCAL_FEATURES.forEach((f, i) => console.log(`  ${f.name.padEnd(14)} ${model.w[i]!.toFixed(4)}`));
 console.log(`  ${"bias".padEnd(14)} ${model.b.toFixed(4)}`);
@@ -269,6 +279,7 @@ const weights: LocalWeights = {
     valAcceptedNetBps,
     valAcceptedCount: acceptedIdx.length,
     valMinProb: minProb,
+    thresholdSweep,
   },
 };
 await Bun.write(join(config.dataDir, "model.json"), JSON.stringify(weights, null, 1));

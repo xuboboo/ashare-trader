@@ -102,6 +102,8 @@ export class Engine {
   private preBuyDate = "";
   /** 上一次盘中买入决策时刻（epoch ms），配合 DECIDE_EVERY_MS 控制节奏 */
   private lastBuyMs = 0;
+  /** 上一次 eodOnly 恢复探测时刻 */
+  private lastEodProbeMs = 0;
   /** 最近一次风控闸判定（挂到事件上，面板可见） */
   private lastRisk: RiskBrake | null = null;
   private opts: EngineOpts;
@@ -157,12 +159,43 @@ export class Engine {
     await this.calendar.refresh();
     const today = bj().ymd;
     this.book.rollover(today);
+    await this.loadPending(today);
     await this.universe.get(today);
     try {
       this.indexBars = await fetchIndexDaily(40); // 上证指数日线，算闸门用的 MA5
     } catch {
       this.indexBars = [];
     }
+  }
+
+  /**
+   * 建议单持久化：pending Map 只活在内存，重启会把当天未成交的建议单丢掉。
+   * 只恢复"今天 + pending"的单（隔日单按规则本就该过期）。
+   */
+  private pendingFile(): string {
+    return join(config.dataDir, "pending.json");
+  }
+
+  private async loadPending(today: string): Promise<void> {
+    try {
+      const j = await Bun.file(this.pendingFile()).json();
+      for (const o of (j?.orders ?? []) as SuggestedOrder[]) {
+        if (o.status === "pending" && o.date === today && !this.pending.has(o.signalId)) {
+          this.pending.set(o.signalId, o);
+        }
+      }
+      if (this.pending.size) console.log(`[engine] 恢复了 ${this.pending.size} 张重启前的在途建议单`);
+    } catch {
+      /* 没有 pending.json：首次运行 */
+    }
+  }
+
+  private async persistPending(): Promise<void> {
+    await mkdir(config.dataDir, { recursive: true });
+    await Bun.write(
+      this.pendingFile(),
+      JSON.stringify({ savedAt: Date.now(), orders: [...this.pending.values()] }, null, 1),
+    );
   }
 
   /** 主循环：交易时段密集，非交易时段每 60s 心跳一次（不拉 300 支快照，省额度）。 */
@@ -235,6 +268,24 @@ export class Engine {
         console.error(`[engine] 批量快照失败(${this.quoteFails}): ${(e as Error).message}`);
       }
     } else {
+      // 降级自恢复：eodOnly 不是单行道。每隔 EOD_RECOVER_MS 用小批量探测一次实时链路，
+      // 成功就恢复实时（整段拉全池），失败的行情源不该把系统永远锁在日频模式。
+      if (trading && canTrade(phase) && this.eodOnly && Date.now() - this.lastEodProbeMs >= config.eodRecoverMs) {
+        this.lastEodProbeMs = Date.now();
+        try {
+          const probe = await fetchSnapshots(codes.slice(0, 30));
+          if (probe.size > 0) {
+            this.snapshots = probe;
+            ok = probe.size;
+            this.eodOnly = false;
+            this.quoteFails = 0;
+            this.stale = false;
+            console.log(`[engine] 实时链路恢复（探测 ${probe.size} 支），退出日频降级`);
+          }
+        } catch {
+          /* 探测失败：继续降级，下个周期再试 */
+        }
+      }
       // 非连续竞价时段：只拉池内前 60 支（一次请求），让仪表盘与盘前复盘有东西看，不白耗额度
       if (!this.snapshots.size && codes.length) {
         try {
@@ -337,6 +388,7 @@ export class Engine {
               this.pending.set(order.signalId, order);
             }
           }
+          if (newOrders.length) await this.persistPending();
         }
       }
     }
@@ -360,13 +412,17 @@ export class Engine {
         fills.push(fill);
       }
     }
+    if (fills.length) await this.persistPending();
     if (phase === "after-hours" || phase === "closed") {
+      let expired = 0;
       for (const [id, order] of [...this.pending]) {
         if (order.date !== clock.date) {
           order.status = "expired";
           this.pending.delete(id);
+          expired++;
         }
       }
+      if (expired) await this.persistPending();
     }
     this.book.markToMarket(new Map([...this.snapshots].map(([c, s]) => [c, s.price])));
 
@@ -525,6 +581,7 @@ export class Engine {
         o.status = "filled";
         o.fill = fill;
         this.pending.delete(args.signalId);
+        await this.persistPending();
       }
     }
     this.book.applyFill(fill);
@@ -579,6 +636,7 @@ export class Engine {
     this.pending.clear();
     await this.book.rewriteTrades();
     await this.book.save();
+    await this.persistPending();
     await this.appendVoid(`清空账本 ${removed} 笔成交${archived ? `，已归档到 ${archived}` : ""}`);
     await this.round(`账本已清空（${removed} 笔）`);
     return { removed, archived };

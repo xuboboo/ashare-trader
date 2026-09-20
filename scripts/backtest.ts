@@ -364,7 +364,8 @@ export function simulate(input: SimInput): { result: BtResult; log: string[] } {
   const profitOverCost = costYuan > 0 ? grossProfitYuan / costYuan : 0;
   const passed = annualized > 0 && netBps > 0 && profitOverCost > 2.5;
 
-  const params = `K=${a.k} 涨幅 ${a.gainMin}-${a.gainMax}% 量比≥${a.vrMin} 成交额≥${a.minAmountYi}亿 单笔${(a.sizeCny / 10000).toFixed(0)}万 止损${config.stopLossPct}%`;
+  const sizeLabel = a.sizeCny >= 10000 ? `${(a.sizeCny / 10000).toFixed(1)}万` : `${Math.round(a.sizeCny)}元`;
+  const params = `K=${a.k} 涨幅 ${a.gainMin}-${a.gainMax}% 量比≥${a.vrMin} 成交额≥${a.minAmountYi}亿 单笔${sizeLabel} 止损${config.stopLossPct}%`;
   const result: BtResult = {
     params,
     trades,
