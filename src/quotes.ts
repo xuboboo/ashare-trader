@@ -31,8 +31,10 @@ export interface Snapshot {
   limitDown: number;
   bids: Level[];
   asks: Level[];
-  /** 行情自带时间 YYYYMMDDHHMMSS，用于判断是不是拿到的是上一日的收盘快照 */
+  /** 行情自带时间 YYYYMMDDHHMMSS，用于判断拿到的是不是上一交易日快照 */
   quoteDay: string;
+  /** 上面那个时间戳换算成 epoch 毫秒（固定按 +08:00 解）。解不出为 0 */
+  quoteAt: number;
   suspended: boolean;
   /** 一字涨停（开=高=低=涨停价），买不进去 */
   oneLineUp: boolean;
@@ -110,6 +112,7 @@ export function parseTencentRow(line: string): Snapshot | null {
     bids: lvls(IDX.bid1p),
     asks: lvls(IDX.ask1p),
     quoteDay: s(parts, IDX.time).slice(0, 8),
+    quoteAt: parseQuoteAt(s(parts, IDX.time)),
     suspended,
     oneLineUp: !suspended && high === low && high === limitUp,
     oneLineDown: !suspended && high === low && high === limitDown,
@@ -117,6 +120,28 @@ export function parseTencentRow(line: string): Snapshot | null {
 }
 
 const BATCH = 60;
+
+/**
+ * 腾讯的时间形如 20260918161458，是北京时间。用固定 +08:00 偏移解析，
+ * 不受本机时区影响（本机不在东八区时也能算对新鲜度）。
+ */
+export function parseQuoteAt(stamp: string): number {
+  if (!/^\d{14}$/.test(stamp)) return 0;
+  const iso = `${stamp.slice(0, 4)}-${stamp.slice(4, 6)}-${stamp.slice(6, 8)}T${stamp.slice(8, 10)}:${stamp.slice(10, 12)}:${stamp.slice(12, 14)}+08:00`;
+  const t = Date.parse(iso);
+  return Number.isFinite(t) ? t : 0;
+}
+
+/** 一批快照里最旧的那份距今多少秒（负值 = 行情时间在未来的异常，归 0）。 */
+export function quoteAgeSec(snapshots: Iterable<Snapshot>, now: number = Date.now()): number {
+  let oldest = 0;
+  for (const s of snapshots) {
+    if (!s.quoteAt) continue;
+    oldest = oldest ? Math.min(oldest, s.quoteAt) : s.quoteAt;
+  }
+  if (!oldest) return -1; // 一个时间戳都没有，未知
+  return Math.max(0, (now - oldest) / 1000);
+}
 
 /** 批量快照。失败抛错，由引擎计入 quoteFails 并决定降级。 */
 export async function fetchSnapshots(codes: string[]): Promise<Map<string, Snapshot>> {
@@ -163,6 +188,7 @@ export async function fetchIndex(): Promise<{ price: number; pct: number; amount
     bids: [],
     asks: [],
     quoteDay: s(parts, IDX.time).slice(0, 8),
+    quoteAt: parseQuoteAt(s(parts, IDX.time)),
     suspended: false,
     oneLineUp: false,
     oneLineDown: false,

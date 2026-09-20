@@ -24,6 +24,7 @@ export function mkSnap(over: Partial<Snapshot> = {}): Snapshot {
     bids: [{ p: 10.49, v: 100 }],
     asks: [{ p: 10.51, v: 100 }],
     quoteDay: "20260918",
+    quoteAt: 0,
     suspended: false,
     oneLineUp: false,
     oneLineDown: false,

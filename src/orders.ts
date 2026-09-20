@@ -40,6 +40,11 @@ export interface SuggestedOrder {
   status: OrderStatus;
   /** 影子成交价，人工成交后由回填覆盖 */
   fill: Fill | null;
+  /** 挂单生效后的现价区间（不含挂单前的全天历史）。L1 只有 3s 切片，这就是能做到的粒度。 */
+  seenLow: number;
+  seenHigh: number;
+  /** 开始挂着的时刻（epoch ms），用于区分“挂单前的下影线” */
+  restingSince: number;
 }
 
 export interface Clock {
@@ -49,6 +54,9 @@ export interface Clock {
 
 let seq = 0;
 const nextId = (date: string) => `S${date.replace(/-/g, "")}-${(++seq).toString().padStart(4, "0")}`;
+
+/** 新建建议单时，只看得到创建那一刻的现价；之后的极值由 updateResting 累加。 */
+const resting = (price: number) => ({ seenLow: price, seenHigh: price, restingSince: Date.now() });
 
 /** 尾盘开仓建议单。不可买（买不起一手 / 全否决）时返回 null。 */
 export function makeBuyOrder(scored: Scored, clock: Clock, vetoReason?: string): SuggestedOrder | null {
@@ -84,6 +92,7 @@ export function makeBuyOrder(scored: Scored, clock: Clock, vetoReason?: string):
     score: scored.score,
     status: "pending",
     fill: null,
+    ...resting(f.price),
   };
 }
 
@@ -126,6 +135,7 @@ export function makeExitOrder(
     score,
     status: "pending",
     fill: null,
+    ...resting(snap.price),
   };
 }
 
@@ -133,36 +143,36 @@ export function rejectOrder(order: SuggestedOrder, why: string): SuggestedOrder 
   return { ...order, status: "rejected", rejectReason: why };
 }
 
+/** 每轮心跳把挂单生效后的价格区间往前推一格。 */
+export function updateResting(order: SuggestedOrder, snap: Snapshot): SuggestedOrder {
+  if (order.status !== "pending" || !(snap.price > 0)) return order;
+  order.seenLow = Math.min(order.seenLow, snap.price);
+  order.seenHigh = Math.max(order.seenHigh, snap.price);
+  return order;
+}
+
 /**
- * 纸面撮合：限价单被真实价格穿过才成交，并吃一个滑点。
- * 一字涨停买不进、一字跌停卖不出，与实盘一致。
+ * 纸面撮合。我们的建议单是“对手价 ± 2 tick”的可成交限价单，所以不是排队等成交，
+ * 而是下一轮就能看到价。保守在三处：
+ *  1) 成交价用**下一轮观测到的现价**加滑点，不是下单那一刻的参考价（L1 3s 一切片，这几秒里跑掉的价必须付）；
+ *  2) 只用挂单之后观察到的极值（seenLow/seenHigh）判“能不能成交”，不用全天累计高低点
+ *     ——全天最低价可能在挂单前很久就走掉了，拿它判成交会把每一张单都秒成；
+ *  3) 价格已经跑到限价之上（买）或跌穿限价之下（卖）时，成交价被限价钳住，不拿之后的好价占便宜。
+ * 一字涨停买不进、一字跌停卖不出。
  */
 export function tryPaperFill(order: SuggestedOrder, snap: Snapshot, clock: Clock): Fill | null {
   if (snap.suspended) return null;
-  if (order.side === "buy") {
-    if (snap.oneLineUp || snap.high === snap.limitUp && snap.low === snap.limitUp) return null;
-    if (snap.low > order.limitHigh) return null;
-    const px = round2(Math.min(order.limitHigh, Math.max(slipFillPrice(order.priceRef, "buy"), snap.low)));
-    return makeFill({
-      code: order.code,
-      name: order.name,
-      side: "buy",
-      price: px,
-      qty: order.qty,
-      date: clock.date,
-      time: clock.time,
-      kind: "paper",
-      signalId: order.signalId,
-      slippageBps: order.priceRef > 0 ? ((px - order.priceRef) / order.priceRef) * 10_000 : 0,
-    });
-  }
-  if (snap.oneLineDown) return null;
-  if (snap.high < order.limitLow) return null;
-  const px = round2(Math.max(order.limitLow, Math.min(slipFillPrice(order.priceRef, "sell"), snap.high)));
+  const buy = order.side === "buy";
+  if (buy && snap.oneLineUp) return null;
+  if (!buy && snap.oneLineDown) return null;
+  // 挂单之后的观察价有没有到过我们的限价
+  if (buy ? order.seenLow > order.limitHigh : order.seenHigh < order.limitLow) return null;
+  const raw = slipFillPrice(snap.price, order.side);
+  const px = round2(buy ? Math.min(raw, order.limitHigh) : Math.max(raw, order.limitLow));
   return makeFill({
     code: order.code,
     name: order.name,
-    side: "sell",
+    side: order.side,
     price: px,
     qty: order.qty,
     date: clock.date,

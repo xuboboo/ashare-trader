@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { featuresFromSnapshot, scoreStock } from "../src/factors";
-import { makeBuyOrder, makeExitOrder, tryPaperFill } from "../src/orders";
+import { makeBuyOrder, makeExitOrder, tryPaperFill, updateResting } from "../src/orders";
 import { Book, makeFill } from "../src/state";
 import { mkSnap } from "./helpers";
 
@@ -39,40 +39,46 @@ describe("建议单", () => {
   });
 });
 
-describe("纸面撮合", () => {
-  test("价格穿过限价区间才成交，且吃一个滑点", () => {
-    const o = makeBuyOrder(scored(), clock)!;
-    const fill = tryPaperFill(o, mkSnap({ low: 10.4, high: 10.6 }), clock)!;
-    expect(fill).toBeTruthy();
-    expect(fill.qty).toBe(o.qty);
-    expect(fill.price).toBeGreaterThanOrEqual(o.priceRef);
-    expect(fill.price).toBeLessThanOrEqual(o.limitHigh);
-    expect(fill.costs.total).toBeGreaterThan(0);
+describe("纸面撮合（保守口径）", () => {
+  test("成交用下一轮观测价 + 滑点，不拿下单那一刻的参考价占便宜", () => {
+    const o = makeBuyOrder(scored(), clock)!; // priceRef 10.5, limitHigh 10.52
+    updateResting(o, mkSnap({ price: 10.51, low: 10.4, high: 10.6 }));
+    const fill = tryPaperFill(o, mkSnap({ price: 10.51, low: 10.4, high: 10.6 }), clock)!;
+    expect(fill.price).toBe(10.52); // 10.51 + 1 tick 被限价钳住
+    expect(fill.price).toBeGreaterThan(o.priceRef);
   });
 
-  test("今天没跌到限价区间就不成交", () => {
-    const o = makeBuyOrder(scored(), clock)!;
-    expect(tryPaperFill(o, mkSnap({ low: o.limitHigh + 0.05, high: o.limitHigh + 0.2 }), clock)).toBeNull();
+  test("价格跑到限价之上就是追价失败，不成交（也不拿之后的好价补）", () => {
+    const o = makeBuyOrder(scored({ price: 10.5 }), clock)!;
+    // 挂单前的全天低点不能替我们成交：只更新“挂单之后”的观察价
+    o.seenLow = o.seenHigh = o.priceRef;
+    updateResting(o, mkSnap({ price: 10.9, low: 10.85, high: 10.95 }));
+    // seenLow 仍等于创建时的现价，低于限价 → 可成交，但成交价取当前观测价并被限价钳住
+    const fill = tryPaperFill(o, mkSnap({ price: 10.9, low: 10.85, high: 10.95 }), clock)!;
+    expect(fill.price).toBe(o.limitHigh);
+    // 而挂单后价格一路向上、从未回到限价：把 seenLow 推高就该判不成交
+    o.seenLow = 10.95;
+    expect(tryPaperFill(o, mkSnap({ price: 10.95, low: 10.9, high: 11 }), clock)).toBeNull();
   });
 
-  test("一字涨停买不进、一字跌停卖不出", () => {
-    const o = makeBuyOrder(scored(), clock)!;
-    expect(tryPaperFill(o, mkSnap({ oneLineUp: true, low: 11, high: 11, price: 11 }), clock)).toBeNull();
-
+  test("卖单跌穿限价：按限价成交，不美化成更高的价", () => {
     const book = new Book(200_000);
     book.rollover("2026-09-18");
     book.applyFill(makeFill({ code: "600000", name: "测试股份", side: "buy", price: 10.5, qty: 1000, date: "2026-09-18", time: "14:45", kind: "paper" }));
     book.rollover("2026-09-21");
     const pos = book.positions.get("600000")!;
     const sell = makeExitOrder(pos, mkSnap({ price: 10, prevClose: 10.5 }), { date: "2026-09-21", time: "09:35" }, "止损", 1000)!;
-    expect(sell.limitLow).toBe(9.98); // 10 - 2 tick
-    expect(tryPaperFill(sell, mkSnap({ price: 9.45, prevClose: 10.5, oneLineDown: true, high: 9.45, low: 9.45 }), clock)).toBeNull();
-    // 当日最高价没碰到限价区间 → 不成交
-    expect(tryPaperFill(sell, mkSnap({ price: 9.6, prevClose: 10.5, high: 9.7, low: 9.4 }), clock)).toBeNull();
-    const fill = tryPaperFill(sell, mkSnap({ price: 9.99, prevClose: 10.5, high: 10.05, low: 9.4 }), clock)!;
-    expect(fill).toBeTruthy();
-    expect(fill.price).toBeGreaterThanOrEqual(sell.limitLow);
-    expect(fill.price).toBeLessThanOrEqual(sell.priceRef);
+    expect(sell.limitLow).toBe(9.98);
+    const fill = tryPaperFill(sell, mkSnap({ price: 9.5, prevClose: 10.5, high: 10.5, low: 9.4 }), clock)!;
+    expect(fill.price).toBe(sell.limitLow); // 被限价托住，不会记成 10.4 那种好看价
+  });
+
+  test("停牌与一字板不成交", () => {
+    const o = makeBuyOrder(scored(), clock)!;
+    expect(tryPaperFill(o, mkSnap({ suspended: true, price: 10.5 }), clock)).toBeNull();
+    expect(tryPaperFill(o, mkSnap({ oneLineUp: true, price: 11, high: 11, low: 11 }), clock)).toBeNull();
+    // 一字跌停的卖单：即使 seenHigh 满足条件也不给成交
+    expect(tryPaperFill({ ...o, side: "sell", seenHigh: 12 }, mkSnap({ oneLineDown: true, price: 9, low: 9, high: 9 }), clock)).toBeNull();
   });
 
   test("T+1：今日买入的仓位不会被要求卖出", () => {

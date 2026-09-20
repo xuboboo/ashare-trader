@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { parseKlines, parseTencentRow } from "../src/quotes";
+import { parseKlines, parseQuoteAt, parseTencentRow, quoteAgeSec } from "../src/quotes";
 
 /**
  * 契约测试：用 2026-09-18 真实录制的一行行情锁字段序号。
@@ -81,5 +81,27 @@ describe("东财日线解析（契约）", () => {
 
   test("与腾讯快照的收盘价一致", () => {
     expect(bars[1]!.close).toBe(parseTencentRow(RECORDED)!.price);
+  });
+});
+
+describe("行情新鲜度", () => {
+  test("时间戳按 +08:00 解，不受本机时区影响", () => {
+    expect(parseQuoteAt("20260918161458")).toBe(Date.parse("2026-09-18T16:14:58+08:00"));
+    expect(parseQuoteAt("20260918")).toBe(0); // 格式不对不能猜
+    expect(parseQuoteAt("")).toBe(0);
+    expect(parseTencentRow(RECORDED)!.quoteAt).toBe(Date.parse("2026-09-18T16:14:58+08:00"));
+  });
+
+  test("ageSec 取一批快照里最旧的那份", () => {
+    const sn = parseTencentRow(RECORDED)!;
+    const now = sn.quoteAt + 5_000;
+    expect(quoteAgeSec([sn], now)).toBe(5);
+    const older = { ...sn, quoteAt: sn.quoteAt - 30_000 };
+    expect(quoteAgeSec([sn, older], now)).toBe(35);
+  });
+
+  test("没带时间戳时返回 -1（未知），而不是假装很新鲜", () => {
+    expect(quoteAgeSec([{ ...parseTencentRow(RECORDED)!, quoteAt: 0 }])).toBe(-1);
+    expect(quoteAgeSec([])).toBe(-1);
   });
 });

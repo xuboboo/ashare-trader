@@ -61,6 +61,10 @@ export interface SuggestedOrder {
   score: number;
   status: OrderStatus;
   fill: Fill | null;
+  /** 挂单生效后的现价区间（纸面撮合只能看这个，不能看全天累计极值） */
+  seenLow: number;
+  seenHigh: number;
+  restingSince: number;
 }
 
 export interface Decision {
@@ -120,7 +124,7 @@ export interface TickEvent {
     enabled: boolean;
   } | null;
   universe: number;
-  quotes: { ok: number; fails: number; stale: boolean; eodOnly: boolean; quoteDay: string };
+  quotes: { ok: number; fails: number; stale: boolean; eodOnly: boolean; quoteDay: string; ageSec: number };
   scan: {
     scored: number;
     rejected: number;

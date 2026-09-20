@@ -6,6 +6,14 @@ import type { Meta, TickEvent } from "@/lib/types";
 
 const DASH = "-";
 
+function ageLabel(latest: TickEvent | null): string {
+  if (!latest) return DASH;
+  const live = latest.tradingDay && (latest.phase === "continuous" || latest.phase === "call-auction" || latest.phase === "close-auction");
+  if (!live) return latest.quotes.quoteDay ? `收盘 ${latest.quotes.quoteDay.slice(4, 6)}/${latest.quotes.quoteDay.slice(6, 8)}` : "非盘中";
+  if (latest.quotes.ageSec < 0) return "未知";
+  return latest.quotes.ageSec >= 60 ? `${Math.round(latest.quotes.ageSec / 60)}分钟` : `${latest.quotes.ageSec}s`;
+}
+
 export default function StatsRow({
   latest,
   avgLatencyMs,
@@ -53,6 +61,11 @@ export default function StatsRow({
       </span>
       <span className="stat">
         快照<b>{latest ? `${fmtInt(latest.quotes.ok)}/${fmtInt(latest.universe)}` : DASH}</b>
+      </span>
+      {/* 行情新鲜度：L1 本身 3s 一个切片，盘中最关键；收盘后拿这个数没意义，改显快照日期 */}
+      <span className="stat">
+        行情延迟
+        <b className={latest?.quotes.stale ? "up" : undefined}>{ageLabel(latest)}</b>
       </span>
       <span className="spacer" />
       <span>本轮 {Number.isFinite(avgLatencyMs) && avgLatencyMs > 0 ? `${Math.round(avgLatencyMs)}ms` : DASH}</span>

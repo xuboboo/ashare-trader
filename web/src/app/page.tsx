@@ -21,6 +21,8 @@ export default function Page() {
   const banners: string[] = [];
   if (latest?.quotes.eodOnly) banners.push("实时链路已降级为日频：只在盘前出一次信号");
   else if (latest && latest.quotes.fails > 0) banners.push(`行情接口失败 ${latest.quotes.fails} 次，连续 3 次将降级`);
+  if (latest?.quotes.stale)
+    banners.push(`行情已老化 ${latest.quotes.ageSec}s（阈值内才算活价），本轮不出单也不判成交`);
   if (feed.meta?.calendarStale) banners.push("交易日历不可用，按周一~周五猜测交易日");
   if (latest && !latest.tradingDay) banners.push(`非交易日（${latest.date}），下面是最近一个交易日的复盘快照`);
   if (latest?.decision?.modelFailed) banners.push("模型本轮失败，已按 hold 处理");

@@ -11,8 +11,8 @@ import { config } from "./config";
 import { TradingCalendar } from "./calendar";
 import { featuresFromSnapshot, ma5CloseBefore, marketGate, scoreStock, type Gate, type Scored } from "./factors";
 import { createModel, type Decision, type DailyBias, LlmAdvisory } from "./model";
-import { makeBuyOrder, makeExitOrder, tryPaperFill, type Clock, type SuggestedOrder } from "./orders";
-import { fetchIndexDaily, fetchIndex, fetchZtPool, fetchSnapshots, type DailyBar, type Snapshot } from "./quotes";
+import { makeBuyOrder, makeExitOrder, tryPaperFill, updateResting, type Clock, type SuggestedOrder } from "./orders";
+import { fetchIndexDaily, fetchIndex, fetchZtPool, fetchSnapshots, quoteAgeSec, type DailyBar, type Snapshot } from "./quotes";
 import { bj, canTrade, hhmmOf, liveQuotes, phaseOf, type Phase, sessionNow } from "./session";
 import { Book, makeFill, round2, type Fill } from "./state";
 import { Universe } from "./universe";
@@ -47,7 +47,7 @@ export interface TickEvent {
   gate: Gate;
   bias: { emotionScore: number; allowOpen: boolean; reason: string; vetoes: number; llmFailed: boolean; enabled: boolean } | null;
   universe: number;
-  quotes: { ok: number; fails: number; stale: boolean; eodOnly: boolean; quoteDay: string };
+  quotes: { ok: number; fails: number; stale: boolean; eodOnly: boolean; quoteDay: string; ageSec: number };
   scan: { scored: number; rejected: number; top: { code: string; name: string; score: number; gainPct: number; volumeRatio: number; priceVsVwapBps: number; reasons: string[] }[] };
   decision: Decision | null;
   orders: SuggestedOrder[];
@@ -224,6 +224,13 @@ export class Engine {
       ok = this.snapshots.size;
     }
 
+    // ---- 行情新鲜度 ----
+    // L1 本身 3 秒一个切片；超过 QUOTE_STALE_SEC 没更新就是源真断了，不能拿它出单/判成交。
+    const ageSec = Math.round(quoteAgeSec(this.snapshots.values()));
+    const quotesFresh = ageSec >= 0 && ageSec <= config.quoteStaleSec;
+    /** 这一轮的行情能不能拿来做决策与撮合 */
+    const usable = trading && canTrade(phase) && ok > 0 && quotesFresh;
+
     // ---- 大盘闸门 ----
     this.indexMa5 = this.indexBars.length >= 5 ? (ma5CloseBefore(this.indexBars, clock.date) ?? null) : this.indexMa5;
     if (!this.indexBars.length) {
@@ -265,7 +272,7 @@ export class Engine {
     // force-scan 允许在收盘后跑：拿最近一个交易日的快照做复盘，看今天到底会出什么单
     if (force || (trading && canTrade(phase))) {
       if ((trigger === "盘前" || force) && this.biasDate !== clock.date) await this.refreshBias(clock, index);
-      if ((trigger === "尾盘选股" || force) && scored.length) {
+      if ((trigger === "尾盘选股" || force) && scored.length && (!trading || usable)) {
         decision = await this.decide(clock, scored, gate, "buy");
         for (const pick of decision?.picks ?? []) {
           const s = scored.find((x) => x.features.code === pick.code);
@@ -277,20 +284,21 @@ export class Engine {
             this.pending.set(order.signalId, order);
           }
         }
-      } else if (trigger === "退出窗口" && liveQuotes(phase)) {
+      } else if (trigger === "退出窗口" && liveQuotes(phase) && usable) {
         decision = await this.decide(clock, scored, gate, "manage");
         newOrders.push(...this.exitOrders(clock));
       }
     }
 
     // ---- 影子撮合 + 净值 ----
-    // 只用当日连续竞价/竞价时段的快照撮合，避免拿昨日收盘数据伪造成交
+    // 只用当日、且新鲜度合格的连续竞价快照撮合；挂单后的极值由 updateResting 逐轮累加
     const fills: Fill[] = [];
     const todayCompact = clock.date.replace(/-/g, "");
-    const fillable = trading && canTrade(phase);
+    const fillable = usable;
     for (const [id, order] of [...this.pending]) {
       const sn = this.snapshots.get(order.code);
       if (!sn || !fillable || sn.quoteDay !== todayCompact) continue;
+      updateResting(order, sn);
       const fill = config.paper ? tryPaperFill(order, sn, clock) : null;
       if (fill) {
         this.book.applyFill(fill);
@@ -336,9 +344,10 @@ export class Engine {
       quotes: {
         ok,
         fails: this.quoteFails,
-        stale: this.stale,
+        stale: (trading && canTrade(phase) && !quotesFresh) || (trading && canTrade(phase) && ok === 0),
         eodOnly: this.eodOnly,
         quoteDay: [...this.snapshots.values()][0]?.quoteDay ?? index.quoteDay ?? "",
+        ageSec,
       },
       scan: { scored: scored.length, rejected, top },
       decision,
@@ -346,7 +355,7 @@ export class Engine {
       fills,
       positions: this.positionView(),
       totals: this.book.totals(),
-      note: this.note(trading, phase, ok, performance.now() - t0),
+      note: this.note(trading, phase, ok, performance.now() - t0, ageSec, quotesFresh),
     };
     this.attach(event);
     return event;
@@ -497,11 +506,12 @@ export class Engine {
     };
   }
 
-  private note(trading: boolean, phase: Phase, quotes: number, ms: number): string {
+  private note(trading: boolean, phase: Phase, quotes: number, ms: number, ageSec: number, fresh: boolean): string {
     if (!trading) return `非交易日（${phase}），数据为最近收盘快照 ${Math.round(ms)}ms`;
     if (this.eodOnly) return "实时链路降级：只用日频，盘前出一次信号";
     if (phase === "lunch") return "午休";
     if (quotes === 0 && canTrade(phase)) return "还没有可用快照";
+    if (!fresh) return `行情已老化 ${ageSec}s > ${config.quoteStaleSec}s，本轮不出单不撮合`;
     return `${Math.round(ms)}ms`;
   }
 }

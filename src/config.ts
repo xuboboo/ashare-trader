@@ -20,6 +20,8 @@ export const config = {
     .map((s) => s.trim())
     .filter(Boolean),
   pollMs: num("POLL_MS", 3000),
+  /** 行情老化到多少秒就不再相信它（L1 本身 3s 一个切片，30s 意味着源真的断了）。 */
+  quoteStaleSec: num("QUOTE_STALE_SEC", 30),
   /** true = 只用日频（盘前一次出信号）。实时链路连续故障时引擎会自动置为 true。 */
   eodOnly: bool("EOD_ONLY"),
 
