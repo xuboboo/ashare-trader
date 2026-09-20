@@ -24,6 +24,13 @@ function useBeijingClock(): string {
   return t;
 }
 
+const CONN: Record<ConnectionState, string> = {
+  connecting: "连接中",
+  live: "在线",
+  reconnecting: "重连中",
+};
+
+/** 标题一行 + 元信息一行，没有徽章盒子。 */
 export default function Header({
   meta,
   latest,
@@ -34,22 +41,28 @@ export default function Header({
   connection: ConnectionState;
 }) {
   const clock = useBeijingClock();
-  const live = latest?.phase === "continuous";
+  const parts = [
+    CONN[connection],
+    phaseCn(latest?.phase),
+    latest?.trigger,
+    meta?.paper === false ? "真实下单" : "PAPER 影子成交",
+    `模型 ${meta?.model ?? "—"}`,
+    meta?.llm && meta.llm !== "off" ? `LLM ${meta.llm}` : "LLM 未启用",
+    `股票池 ${meta?.universe ?? 0}`,
+  ].filter(Boolean);
+
   return (
     <header className="header">
       <span className="title">A 股 T+1 决策台</span>
-      <span className={`badge ${live ? "" : "badgeWarn"}`}>
-        <span className={`dot ${connection === "live" ? "" : "dotOff"}`} />
-        {connection === "live" ? "在线" : connection === "reconnecting" ? "重连中" : "连接中"}
-      </span>
-      <span className="badge">{phaseCn(latest?.phase)}</span>
-      {latest ? <span className="badge">{latest.trigger}</span> : null}
-      {meta?.paper !== false ? <span className="badge badgeDown">PAPER 影子成交</span> : <span className="badge badgeUp">真实下单</span>}
       <span className="spacer" />
-      <span className="mono small muted">
+      <span className="mono meta">
         {latest?.date ?? ""} {clock}
       </span>
-      <span className="sub">下次触发 {latest?.trigger === "尾盘选股" ? "14:57 收盘前" : "14:40 尾盘选股"}</span>
+      <div style={{ flexBasis: "100%" }} />
+      <span className="meta">
+        <span className={`dot ${connection === "live" ? "" : "dotOff"}`} />
+        {parts.join(" · ")}
+      </span>
     </header>
   );
 }

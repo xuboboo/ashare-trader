@@ -35,7 +35,11 @@ function reducer(state: FeedState, action: Action): FeedState {
     case "connection":
       return { ...state, connection: action.connection };
     case "snapshot": {
-      const events = action.events.slice(-CAP);
+      // 服务端历史可能因为重复上报出现同 seq，先按 seq 去重（保留最后一条），
+      // 否则 React 会拿到重复 key
+      const seen = new Map<number, TickEvent>();
+      for (const e of action.events) if (e && typeof e.seq === "number") seen.set(e.seq, e);
+      const events = [...seen.values()].slice(-CAP);
       return {
         meta: action.meta,
         events,
