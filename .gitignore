@@ -2,6 +2,7 @@ node_modules
 .env
 .env.local
 data/
+test/tmp-*
 *.log
 web/.next
 web/node_modules

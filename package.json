@@ -1,5 +1,7 @@
 {
   "name": "ashare-trader",
+  "version": "0.1.0",
+  "description": "A 股 T+1 决策台：Jev / 规则双决策模型 + 严格成本回测 + 人工执行回填",
   "module": "src/index.ts",
   "type": "module",
   "private": true,
@@ -14,5 +16,9 @@
   "devDependencies": {
     "@types/bun": "latest",
     "typescript": "^5.9.0"
+  },
+  "dependencies": {
+    "@ai-sdk/typesafe-ai": "^3.0.0",
+    "ai": "^7.0.103"
   }
 }

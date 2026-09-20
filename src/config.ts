@@ -54,12 +54,21 @@ export const config = {
   indexMinAmountYi: num("INDEX_MIN_AMOUNT_YI", 3000),
 
   /** 决策模型 */
-  model: env("MODEL", "factor") as "factor" | "llm",
+  model: env("MODEL", "factor") as "factor" | "jev",
+  /** TypeSafe 的 System One 模型 Jev：不生成文本，输入 state + 问题，返回带概率的结构化判断 */
+  typesafeApiKey: env("TYPESAFE_AI_API_KEY"),
+  typesafeBaseUrl: env("TYPESAFE_BASE_URL", "https://api.typesafe.ai/v1")!,
+  jevModelId: env("JEV_MODEL_ID", "jev-latest")!,
+  /** 只采纳概率高于此值的候选；太低就是拿模型当噪声放大器 */
+  jevMinProb: num("JEV_MIN_PROB", 0.55),
+  /** 一次请求问几只（所有问题共享同一 state，并行判定，多问几乎不增加延迟） */
+  jevMaxQuestions: num("JEV_MAX_QUESTIONS", 20),
+  jevTimeoutMs: num("JEV_TIMEOUT_MS", 15_000),
+  /** LlmAdvisory（盘前情绪 + 个股事件 veto）用的通用 chat 模型，与 Jev 是两个东西 */
   llmBaseUrl: env("LLM_BASE_URL", "https://api.deepseek.com")!,
   llmModel: env("LLM_MODEL", "deepseek-chat")!,
   llmApiKey: env("LLM_API_KEY"),
   llmTimeoutMs: num("LLM_TIMEOUT_MS", 20_000),
-
   port: num("PORT", 3005),
   historySize: 1000,
   dataDir: env("DATA_DIR", "data")!,

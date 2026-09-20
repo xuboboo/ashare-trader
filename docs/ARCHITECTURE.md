@@ -38,6 +38,7 @@
 | `costs.ts` | 佣金 `max(5, 0.025%)` 双边、印花税 0.05% 卖出单边、过户费、经手证管、滑点 | 成本是本项目最重要的数字，必须只有一处定义 |
 | `factors.ts` | `StockFeatures`（两口径共同的最小输入）+ `scoreStock()` + `marketGate()` | 见下方"一致性契约" |
 | `model.ts` | `FactorModel`（出概率与 picks）、`LlmAdvisory`（日频情绪闸门 + 个股 veto） | LLM 不进热路径，所以它不是 `Model` 而是旁路顾问 |
+| `jev.ts` | `JevModel`：把候选装进一份共享 state，逐只问 boolean，按概率阈值与排序出 picks；失败降级回 `FactorModel` 并标 `modelFailed` | 模型只参与"在合法候选里排序与给胜率"，硬约束仍在代码里；`ask`/`apiKey`/`dataDir` 可注入，因此能离线测试 |
 | `orders.ts` | 建议单生成、`updateResting` 逐轮观察区间、`tryPaperFill` 影子撮合 | 撮合的保守性全在这一个函数里，便于审计 |
 | `state.ts` | `Book`：T+1 `sellable`/`frozen`、买入费用按比例结转、权益曲线、`rebuild()` 重放、JSON 持久化 | 账本必须能被回测、CLI 回填、HTTP 回填三条路共用；撤销靠重放而不是反向数学 |
 | `engine.ts` | 主循环、三个调度点、新鲜度门控、降级、心跳事件 | 唯一有状态与时序的地方 |
@@ -90,8 +91,10 @@
 
 ## 四个扩展点
 
-1. **换决策源**：实现 `Model.decide(state) => Decision`（保持概率与 `late` 语义），
-   在 `createModel()` 里按 `MODEL` 切换。LLM 走旁路 `LlmAdvisory`，别放进 tick 循环
+1. **换决策源**：实现 `Model.decide(state) => Decision`（保持概率与 `late`/`modelFailed` 语义），
+   在 `engine.ts` 里按 `MODEL` 切换。`JevModel`（`src/jev.ts`）就是现成的例子：
+   它的 `ask` 可注入，所以接入一个新模型时先写假回答把逻辑测完，再挂真 key。
+   旁路顾问（日频、不进 tick 循环）走 `LlmAdvisory`
 2. **换成本**：`costs.ts` 全部来自 config；换标的（可转债 / ETF）主要就是改这里 + `symbols.limitPct()`
 3. **换因子**：`scoreStock()` 里加 reject 或改 `WEIGHTS`；阈值走 `FactorParams` 以便回测做参数扫描时逐组传入
 4. **接真实通道**（Phase 5，需先做券商程序化报备）：把 `orders.ts` 的纸面撮合换成

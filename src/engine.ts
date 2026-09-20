@@ -12,7 +12,8 @@ import { mkdir } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { TradingCalendar } from "./calendar";
 import { featuresFromSnapshot, ma5CloseBefore, marketGate, scoreStock, type Gate, type Scored } from "./factors";
-import { createModel, type Decision, type DailyBias, LlmAdvisory } from "./model";
+import { FactorModel, type Decision, type DailyBias, type Model, LlmAdvisory } from "./model";
+import { JevModel } from "./jev";
 import { makeBuyOrder, makeExitOrder, tryPaperFill, updateResting, type Clock, type SuggestedOrder } from "./orders";
 import { fetchIndexDaily, fetchIndex, fetchZtPool, fetchSnapshots, quoteAgeSec, type DailyBar, type Snapshot } from "./quotes";
 import { bj, canTrade, hhmmOf, liveQuotes, phaseOf, type Phase, sessionNow } from "./session";
@@ -69,7 +70,7 @@ export class Engine {
   book = new Book();
   readonly universe = new Universe();
   readonly calendar = new TradingCalendar();
-  private model = createModel();
+  private model: Model = config.model === "jev" ? new JevModel() : new FactorModel();
   private advisory = new LlmAdvisory();
 
   private history: TickEvent[] = [];
@@ -89,6 +90,8 @@ export class Engine {
   private bias: DailyBias | null = null;
   private biasDate = "";
   private zt = { count: 0, maxLianBan: 0, industries: new Map<string, number>() };
+  /** 本轮的大盘上下文，传给决策模型的 state 用 */
+  private lastIndex: { price: number; pct: number; amountYi: number; ma5: number | null } | null = null;
   private opts: EngineOpts;
 
   constructor(opts: EngineOpts = {}) {
@@ -244,6 +247,7 @@ export class Engine {
       }
     }
     const gate = marketGate({ price: index.price, amountYi: index.amountYi }, this.indexMa5, trading ? this.zt.count || null : null);
+    this.lastIndex = { price: index.price, pct: index.pct, amountYi: index.amountYi, ma5: this.indexMa5 };
 
     // ---- 选股打分 ----
     const scored: Scored[] = [];
@@ -373,6 +377,7 @@ export class Engine {
       time: clock.time,
       horizon: mode === "buy" ? "尾盘买入、次日 10:00 前清仓" : "持仓退出",
       gate,
+      index: this.lastIndex,
       candidates: scored,
       heldCodes: held.map((p) => p.code),
       allowed: {

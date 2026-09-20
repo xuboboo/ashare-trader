@@ -77,6 +77,25 @@ Invoke-RestMethod -Method Post http://localhost:3005/fill -ContentType 'applicat
 成交 id 格式为 `YYYYMMDD-HHMM-代码-方向`，由 `GET /fills` 返回（在仪表盘上点「撤销」不需要手填 id）；
 命令行要用 `--undo` 时先 `Invoke-RestMethod http://localhost:3005/fills | % { $_.fills.id }` 拿。
 
+## 启用 Jev 作为决策模型
+
+```powershell
+# .env
+MODEL=jev
+TYPESAFE_AI_API_KEY=ts_xxx...
+bun run start
+```
+
+行为要点：
+
+- 只在**尾盘选股**且**大盘闸门开着**时调用；闸门关着或没额度不会花一次调用
+- 一次请求把最多 `JEV_MAX_QUESTIONS` 只候选问完；问题文本里写死了退出规则与往返成本
+- 返回的概率低于 `JEV_MIN_PROB` 的候选直接不采纳；全部不及格就是 hold，不硬凑一单
+- 同一轮输入相同会命中 `data/llm/jev-<date>-<hash>.json` 缓存，不重复计费
+- 没 key / 超时 / 返回不可用 → 降级回规则打分，仪表盘顶部会亮横幅（`decision.modelFailed`）
+
+验证降级与出单逻辑不需要 key：`bun test test/jev.test.ts`（用注入的假回答跑完九种情形）。
+
 ## 参数表（`.env`，全部有代码内默认值）
 
 | 变量 | 默认 | 含义 |
@@ -103,8 +122,13 @@ Invoke-RestMethod -Method Post http://localhost:3005/fill -ContentType 'applicat
 | `MIN_AMOUNT_YI` / `MIN_MCAP_YI` | 2 / 60 | 成交额与市值门槛（市值只在实盘快照路径生效，日线口径没有该字段） |
 | `MIN_LIST_DAYS` | 60 | **回测数据层**生效：日线不够这个根数的股票直接不进样本（`fetch-daily`） |
 | `INDEX_MIN_AMOUNT_YI` | 3000 | 大盘闸门的上证成交额下限 |
-| `MODEL` | factor | 决策模型 |
-| `LLM_BASE_URL` / `LLM_MODEL` / `LLM_API_KEY` | deepseek | 留空 key 即完全关闭 LLM 分支 |
+| `MODEL` | factor | `factor` = 规则打分；`jev` = 用 Jev 给每只候选出胜率（失败自动降级回 factor） |
+| `TYPESAFE_AI_API_KEY` | 空 | Jev 的 key。**不配也能跑**，只是 `MODEL=jev` 会立刻降级并在事件里标 `modelFailed` |
+| `TYPESAFE_BASE_URL` / `JEV_MODEL_ID` | api.typesafe.ai/v1 / jev-latest | Jev 接入点 |
+| `JEV_MIN_PROB` | 0.55 | 只采纳概率高于此值的候选；调低就是拿模型当噪声放大器 |
+| `JEV_MAX_QUESTIONS` | 20 | 一次请求问几只（共享 state、并行判定，多问几乎不增加延迟） |
+| `JEV_TIMEOUT_MS` | 15000 | 超过就降级，不卡心跳 |
+| `LLM_BASE_URL` / `LLM_MODEL` / `LLM_API_KEY` | deepseek | 另一个东西：盘前情绪闸门与个股事件 veto；留空 key 即关闭 |
 | `PORT` | 3005 | 后端端口（前端在 `web/.env.local` 的 `NEXT_PUBLIC_API_URL` 同步） |
 
 ## 回测与复盘

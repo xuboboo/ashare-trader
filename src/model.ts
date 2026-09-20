@@ -26,6 +26,8 @@ export interface SignalState {
   /** 决策口径说明，例如"尾盘买入、次日 10:00 前清仓" */
   horizon: string;
   gate: Gate;
+  /** 大盘上下文（给模型的 state 与闸门判断用同一份数据） */
+  index: { price: number; pct: number; amountYi: number; ma5: number | null } | null;
   candidates: Scored[];
   heldCodes: string[];
   allowed: { buy: boolean; sell: boolean };
@@ -50,7 +52,7 @@ export interface Model {
   decide(state: SignalState): Promise<Decision>;
 }
 
-/** 确定性规则打分：毫秒级，可回测，默认模型。 */
+/** 确定性规则打分：毫秒级，可回测，也是 Jev 不可用时的降级目标。 */
 export class FactorModel implements Model {
   readonly name = "factor";
 
@@ -93,8 +95,6 @@ export class FactorModel implements Model {
     };
   }
 }
-
-export const createModel = (): Model => new FactorModel();
 
 /* ------------------------------------------------------------------ LLM 顾问 */
 

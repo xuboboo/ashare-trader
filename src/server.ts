@@ -41,7 +41,8 @@ export function startServer(engine: Engine) {
 
       if (pathname === "/scan" && req.method === "POST") {
         const e = await engine.round("force-scan");
-        return json({ ok: true, seq: e.seq, orders: e.orders, gate: e.gate, scan: e.scan });
+        // decision 一并返回：降级（modelFailed）这类信息不能只活在 SSE 里，否则命令行看不到
+        return json({ ok: true, seq: e.seq, orders: e.orders, gate: e.gate, scan: e.scan, decision: e.decision, quotes: e.quotes });
       }
 
       if (pathname === "/fill" && req.method === "POST") {

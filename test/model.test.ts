@@ -16,6 +16,7 @@ const base = {
   vetoes: {} as Record<string, string>,
   openSlots: 3,
   allowed: { buy: true, sell: false },
+  index: { price: 3900, pct: 0.5, amountYi: 9000, ma5: 3850 },
   gate: { allowed: true, reasons: ["闸门通过"] },
 };
 

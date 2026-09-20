@@ -1,6 +1,7 @@
 # ashare-trader — A 股 T+1 决策台
 
-一个 A 股 T+1 的**决策台**：可插拔的决策模型、单轮在途的事件循环、含真实成本的影子记账、SSE 实时仪表盘。
+**A 股 T+1 决策台**：把 [Jev](https://ai-sdk.dev/providers/ai-sdk-providers/typesafe-ai)（TypeSafe 的 System One 模型）接进 A 股的尾盘选股决策，
+配上严格到难看的成本核算、日线 T+1 回测，以及"AI 说了不算、硬约束说了算"的执行层。
 它不自动下单 —— 每个交易日只在三个时刻给出可执行的建议：**09:05 盘前闸门、09:30-10:00 持仓退出、14:40-14:57 尾盘选股**。
 
 > **当前状态：策略未通过自己的回测门槛，停在回测层。**
@@ -16,6 +17,39 @@
 | 告诉你每一单的往返成本是多少 bp、止损价、次日必须几点走 | 做不了日内挂撤单吃价差（T+1 + 涨跌停 + 程序化报备） |
 | 用日线严格 T+1 回测，并给"过 / 不过"的判定 | 给不了正期望的日内策略（数据是 L1 三秒快照，见 [docs/DATA.md](docs/DATA.md)） |
 | 记录你手工回填的真实成交，统计建议价与成交价之差 | 保证回测结论可外推（样本有选择偏差，README 下方明确写了） |
+| 让 Jev 给每只候选一个可审计的胜率（`decision.picks[].probability`，带 `inputTokens` 计费口径） | 让模型决定"能不能买"—— 闸门、T+1、涨跌停、流动性仍是代码里的硬否决 |
+
+## 关于 Jev（以及"首个"这个说法）
+
+Jev 是 TypeSafe 在 2026-09-16 发布的 "System One 模型"：它不生成文本，而是输入一份 state 与若干问题，
+**并行**返回带概率的结构化判断（boolean / choice / score 三类）。官方口径的分类任务上比对照大模型快约 194–200 倍、
+便宜约 444 倍，端到端延迟 70–500ms，输入 $0.042/百万 token（这些数字来自 TypeSafe 与 LangChain 的公开介绍，
+**我们未独立复测**，本项目也不靠它们成立）。
+
+本项目的用法（`src/jev.ts`）：
+
+- 问的是**可判定的陈述**，不是"你怎么看这只票"：
+  *"在 14:45 以对手价买入 X，按规则于次日 10:00 前退出，扣除约 11.6bp 往返成本后本笔收益为正"*
+- 一次请求把最多 20 只候选一起问完（共享同一 state），boolean 返回的概率即该陈述为真的概率
+- 模型看到的 state 与规则层**同一份数据**（同一 `StockFeatures`、同一 `costs.ts` 口径），不给它任何额外字段，
+  否则回测/实盘一致性就破了
+- 大盘闸门、T+1、涨跌停、流动性、一手门槛**不交给模型**；Jev 只在已经通过筛选的候选里给胜率与排序
+- 没配 key / 超时 / 返回不可用 → 立即降级回规则打分并在事件里标 `modelFailed`，**绝不编一个概率出来**
+
+**关于"首个"**：据我们所知，这是第一个把 Jev 用作 A 股选股决策模型的开源实现（截至 2026-09-21；
+在 GitHub 检索 `Jev` + `A股/ashare/china stock` 未见到同类，公开的 Jev 交易案例集中在加密市场）。
+这是一个**可证伪的说法**：如果你知道反例，开个 issue，我们当天改这段措辞。
+
+启用：
+
+```powershell
+# .env
+MODEL=jev
+TYPESAFE_AI_API_KEY=你的 key
+bun run start
+```
+
+不配 key 也照跑：自动降级为 `MODEL=factor`，功能不缺失，只是不用模型。
 
 ## Quickstart
 
@@ -36,7 +70,7 @@ bun run dev                      # 仪表盘 http://localhost:3006
 三条验证命令：
 
 ```powershell
-bun test                                     # 63 pass / 0 fail
+bun test                                     # 72 pass / 0 fail
 bun run scripts/probe-latency.ts             # 各行情源的往返延迟与数据新鲜度
 bun run scripts/backtest.ts --from=2024-01-01 --sweep   # 36 组参数扫描
 ```
@@ -89,12 +123,13 @@ src/
   costs.ts      佣金 max(5, 0.025%)、印花税卖出单边、过户、经手证管、滑点
   factors.ts    因子打分 + 大盘闸门；日线口径与快照口径共用同一个 scoreStock
   model.ts      FactorModel（默认，毫秒级）+ LlmAdvisory（仅日频：情绪闸门 + 个股 veto）
+  jev.ts        JevModel：TypeSafe System One 模型接入，逐只候选问 boolean，失败自动降级
   orders.ts     建议单生成 + 纸面撮合（观测价成交、限价钳制、一字板不成交）
   state.ts      Book：T+1 可卖/冻结、费用按比例结转、权益曲线、rebuild 重放、JSON 持久化
   engine.ts     主循环：单轮在途、三个调度点、新鲜度门控、心跳事件
   server.ts     Bun.serve：/ /history /positions /fills /orders /scan /fill /fill/remove /reset /events(SSE)
 scripts/        once · probe · probe-latency · fetch-daily · backtest · fill
-test/           8 个文件 63 个用例（含契约测试、回测/实盘一致性、账本重放自洽）
+test/           9 个文件 72 个用例（含契约测试、回测/实盘一致性、账本重放自洽、Jev 接入与降级）
 web/            Next.js 仪表盘
 data/           本地账本、日线、回测产物（全部 gitignore）
 ```

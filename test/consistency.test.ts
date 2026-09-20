@@ -69,6 +69,7 @@ describe("回测/实盘同一口径", () => {
       time: "14:45",
       horizon: "尾盘买入",
       gate: { allowed: true, reasons: [] },
+      index: { price: 3900, pct: 0.5, amountYi: 9000, ma5: null },
       heldCodes: [],
       allowed: { buy: true, sell: false },
       vetoes: {},
