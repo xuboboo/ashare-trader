@@ -1,0 +1,8 @@
+node_modules
+.env
+.env.local
+data/
+*.log
+web/.next
+web/node_modules
+web/out

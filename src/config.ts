@@ -1,0 +1,82 @@
+const env = (key: string, fallback?: string) => process.env[key] || fallback;
+const num = (key: string, fallback: number) => {
+  const v = env(key);
+  if (!v) return fallback;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
+};
+const bool = (key: string, fallback = false) => (env(key) ? env(key) === "true" : fallback);
+/** "HH:MM" -> 当日分钟数 */
+export const hhmm = (s: string, fallback: number): number => {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(s.trim());
+  return m ? Number(m[1]) * 60 + Number(m[2]) : fallback;
+};
+
+export const config = {
+  /** 行情源 */
+  universeSize: num("UNIVERSE_SIZE", 300),
+  watchlist: (env("WATCHLIST", "") || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean),
+  pollMs: num("POLL_MS", 3000),
+  /** true = 只用日频（盘前一次出信号）。实时链路连续故障时引擎会自动置为 true。 */
+  eodOnly: bool("EOD_ONLY"),
+
+  /** 账簿与风控 */
+  paper: bool("PAPER", true),
+  bankrollCny: num("CNY_BANKROLL", 150_000),
+  sizeCny: num("SIZE_CNY", 50_000),
+  k: num("K", 3),
+  maxDailyOpens: num("MAX_DAILY_OPENS", 4),
+  stopLossPct: num("STOP_LOSS_PCT", 3),
+  gapTrimPct: num("GAP_TRIM_PCT", 3),
+  /** 次日无条件清仓 */
+  forceExitMin: hhmm(env("FORCE_EXIT_AT", "10:00")!, 600),
+
+  /** 成本：全部双边/单边含义见 costs.ts，注释里的费率是 2026 年 A 股普通股默认档 */
+  commissionRate: num("COMMISSION_RATE", 0.00025),
+  commissionMin: num("COMMISSION_MIN", 5),
+  stampTaxRate: num("STAMP_TAX_RATE", 0.0005), // 卖出单边
+  transferFeeRate: num("TRANSFER_FEE_RATE", 0.00001), // 双边
+  exchangeFeeRate: num("EXCHANGE_FEE_RATE", 0.000068), // 经手+证管，双边近似
+  slippageTicks: num("SLIPPAGE_TICKS", 1),
+
+  /** 选股因子 */
+  gainMinPct: num("GAIN_MIN_PCT", 3),
+  gainMaxPct: num("GAIN_MAX_PCT", 7),
+  volumeRatioMin: num("VOLUME_RATIO_MIN", 1.5),
+  minAmountYi: num("MIN_AMOUNT_YI", 2),
+  minMcapYi: num("MIN_MCAP_YI", 60),
+  minListDays: num("MIN_LIST_DAYS", 60),
+  indexMinAmountYi: num("INDEX_MIN_AMOUNT_YI", 3000),
+
+  /** 决策模型 */
+  model: env("MODEL", "factor") as "factor" | "llm",
+  llmBaseUrl: env("LLM_BASE_URL", "https://api.deepseek.com")!,
+  llmModel: env("LLM_MODEL", "deepseek-chat")!,
+  llmApiKey: env("LLM_API_KEY"),
+  llmTimeoutMs: num("LLM_TIMEOUT_MS", 20_000),
+
+  port: num("PORT", 3005),
+  historySize: 1000,
+  dataDir: env("DATA_DIR", "data")!,
+
+  /** 时段（Asia/Shanghai 本地分钟数） */
+  session: {
+    callAuctionStart: hhmm("09:15", 555),
+    callAuctionEnd: hhmm("09:25", 565),
+    noCancelStart: hhmm("09:25", 565),
+    noCancelEnd: hhmm("09:30", 570),
+    morningStart: hhmm("09:30", 570),
+    morningEnd: hhmm("11:30", 690),
+    afternoonStart: hhmm("13:00", 780),
+    afternoonEnd: hhmm("14:57", 897),
+    closeAuctionEnd: hhmm("15:00", 900),
+    /** 尾盘选股窗口起点 */
+    tailStart: hhmm(env("TAIL_START", "14:40")!, 880),
+    premarketMin: hhmm(env("PREMARKET_AT", "09:05")!, 545),
+  },
+};
+
+export type Config = typeof config;

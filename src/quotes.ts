@@ -1,0 +1,364 @@
+/**
+ * 实时快照。主源腾讯 qt.gtimg.cn（GBK，一次可批量几十支，带完整五档、涨停/跌停价、量比、均价）。
+ * 字段序号是 2026-09 实测锁定的（见 scripts/probe.ts 与 data/probe.txt），改动会由 quotes.test.ts 的
+ * 契约测试先炸掉，而不是静默算错因子。
+ */
+import { httpGet, httpJson } from "./http";
+import { eastmoneySecid, inScope, limitDown as calcLimitDown, limitUp as calcLimitUp, tencentSymbol } from "./symbols";
+
+export interface Level {
+  p: number;
+  v: number; // 手
+}
+
+export interface Snapshot {
+  code: string;
+  name: string;
+  price: number;
+  prevClose: number;
+  open: number;
+  high: number;
+  low: number;
+  volumeHands: number;
+  amountYuan: number;
+  /** 分时均价（VWAP），腾讯字段 51 */
+  vwap: number;
+  turnoverPct: number;
+  volumeRatio: number;
+  floatMcapYi: number;
+  mcapYi: number;
+  limitUp: number;
+  limitDown: number;
+  bids: Level[];
+  asks: Level[];
+  /** 行情自带时间 YYYYMMDDHHMMSS，用于判断是不是拿到的是上一日的收盘快照 */
+  quoteDay: string;
+  suspended: boolean;
+  /** 一字涨停（开=高=低=涨停价），买不进去 */
+  oneLineUp: boolean;
+  oneLineDown: boolean;
+}
+
+const IDX = {
+  name: 1,
+  code: 2,
+  price: 3,
+  prevClose: 4,
+  open: 5,
+  volume: 6,
+  bid1p: 9,
+  ask1p: 19,
+  time: 30,
+  pct: 32,
+  high: 33,
+  low: 34,
+  amountWan: 37,
+  turnover: 38,
+  floatMcapYi: 44,
+  mcapYi: 45,
+  limitUp: 47,
+  limitDown: 48,
+  volumeRatio: 49,
+  vwap: 51,
+} as const;
+
+const f = (parts: string[], i: number): number => {
+  const v = Number(parts[i]);
+  return Number.isFinite(v) ? v : 0;
+};
+const s = (parts: string[], i: number): string => (parts[i] ?? "").trim();
+
+export function parseTencentRow(line: string): Snapshot | null {
+  const eq = line.indexOf('="');
+  if (eq < 0) return null;
+  const parts = line.slice(eq + 2).split("~");
+  if (parts.length < 52) return null;
+  const code = s(parts, IDX.code);
+  if (!/^\d{6}$/.test(code)) return null;
+  const name = s(parts, IDX.name);
+  const price = f(parts, IDX.price);
+  const prevClose = f(parts, IDX.prevClose);
+  if (!code || !prevClose) return null;
+
+  const lvls = (start: number): Level[] =>
+    [0, 1, 2, 3, 4].map((k) => ({ p: f(parts, start + k * 2), v: f(parts, start + k * 2 + 1) }));
+
+  const limitUp = f(parts, IDX.limitUp) || calcLimitUp(prevClose, code, name);
+  const limitDown = f(parts, IDX.limitDown) || calcLimitDown(prevClose, code, name);
+  const high = f(parts, IDX.high);
+  const open = f(parts, IDX.open);
+  const low = f(parts, IDX.low);
+  const suspended = price <= 0 || (high === 0 && f(parts, IDX.volume) === 0);
+
+  return {
+    code,
+    name,
+    price: suspended ? prevClose : price,
+    prevClose,
+    open,
+    high: high || price,
+    low: low || price,
+    volumeHands: f(parts, IDX.volume),
+    amountYuan: f(parts, IDX.amountWan) * 10_000,
+    vwap: f(parts, IDX.vwap) || price,
+    turnoverPct: f(parts, IDX.turnover),
+    volumeRatio: f(parts, IDX.volumeRatio),
+    floatMcapYi: f(parts, IDX.floatMcapYi),
+    mcapYi: f(parts, IDX.mcapYi),
+    limitUp,
+    limitDown,
+    bids: lvls(IDX.bid1p),
+    asks: lvls(IDX.ask1p),
+    quoteDay: s(parts, IDX.time).slice(0, 8),
+    suspended,
+    oneLineUp: !suspended && high === low && high === limitUp,
+    oneLineDown: !suspended && high === low && high === limitDown,
+  };
+}
+
+const BATCH = 60;
+
+/** 批量快照。失败抛错，由引擎计入 quoteFails 并决定降级。 */
+export async function fetchSnapshots(codes: string[]): Promise<Map<string, Snapshot>> {
+  const out = new Map<string, Snapshot>();
+  const uniq = [...new Set(codes)].filter(Boolean);
+  for (let i = 0; i < uniq.length; i += BATCH) {
+    const chunk = uniq.slice(i, i + BATCH);
+    const q = chunk.map(tencentSymbol).join(",");
+    const text = await httpGet(`https://qt.gtimg.cn/q=${q}`, { referer: "https://gu.qq.com/" });
+    for (const line of text.split("\n")) {
+      const sn = parseTencentRow(line);
+      if (sn) out.set(sn.code, sn);
+    }
+  }
+  return out;
+}
+
+export async function fetchSnapshot(code: string): Promise<Snapshot | null> {
+  const m = await fetchSnapshots([code]);
+  return m.get(code) ?? null;
+}
+
+/** 上证指数：大盘闸门用。symbol 与平安银行撞码，必须带 sh 前缀走这里。 */
+export async function fetchIndex(): Promise<{ price: number; pct: number; amountYi: number; snapshot: Snapshot }> {
+  const text = await httpGet("https://qt.gtimg.cn/q=sh000001", { referer: "https://gu.qq.com/" });
+  const parts = (text.split("\n")[0] ?? "").split('="')[1]?.split("~") ?? [];
+  const snapshot: Snapshot = {
+    code: "000001",
+    name: "上证指数",
+    price: f(parts, IDX.price),
+    prevClose: f(parts, IDX.prevClose),
+    open: f(parts, IDX.open),
+    high: f(parts, IDX.high),
+    low: f(parts, IDX.low),
+    volumeHands: f(parts, IDX.volume),
+    amountYuan: f(parts, IDX.amountWan) * 10_000,
+    vwap: f(parts, IDX.vwap),
+    turnoverPct: 0,
+    volumeRatio: f(parts, IDX.volumeRatio),
+    floatMcapYi: 0,
+    mcapYi: 0,
+    limitUp: 0,
+    limitDown: 0,
+    bids: [],
+    asks: [],
+    quoteDay: s(parts, IDX.time).slice(0, 8),
+    suspended: false,
+    oneLineUp: false,
+    oneLineDown: false,
+  };
+  return {
+    price: snapshot.price,
+    pct: f(parts, IDX.pct),
+    amountYi: snapshot.amountYuan / 1e8,
+    snapshot,
+  };
+}
+
+export interface DailyBar {
+  date: string;
+  open: number;
+  close: number;
+  high: number;
+  low: number;
+  volumeHands: number;
+  amountYuan: number;
+  turnoverPct: number;
+  pct: number;
+  /** 腾讯/新浪没有成交额，用 (高+低+收)/3 * 成交量 估算。回测会统计占比，不让它静默污染结论。 */
+  amountEst?: boolean;
+}
+
+/** 日线字符串行 -> DailyBar。单独抽出来给契约测试用。 */
+export function parseKlines(lines: string[]): DailyBar[] {
+  return lines.map((k) => {
+    const a = k.split(",");
+    return {
+      date: a[0]!,
+      open: Number(a[1]),
+      close: Number(a[2]),
+      high: Number(a[3]),
+      low: Number(a[4]),
+      volumeHands: Number(a[5]),
+      amountYuan: Number(a[6]),
+      turnoverPct: Number(a[10]),
+      pct: Number(a[8]),
+    };
+  });
+}
+
+type KlineSource = "em" | "tx" | "sina";
+let emKlineDownUntil = 0;
+/** 本次运行里实际用过的日线源，用于在报告里说清数据是从哪来的 */
+export const klineSources = new Set<KlineSource>();
+
+/** secid -> 腾讯/新浪的带市场前缀代码。1=沪、0=深，对指数同样成立（1.000001 = 上证）。 */
+const symFromSecid = (secid: string) => `${secid.startsWith("1.") ? "sh" : "sz"}${secid.split(".")[1] ?? secid}`;
+
+async function klineEastmoney(secid: string, limit: number): Promise<DailyBar[]> {
+  const url =
+    `https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${secid}` +
+    `&klt=101&fqt=1&lmt=${limit}&end=20500101&fields1=f1,f2,f3,f4,f5,f6` +
+    `&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61`;
+  const j = await httpJson<{ data?: { klines?: string[] } }>(url, {
+    referer: "https://quote.eastmoney.com/",
+    tries: 2,
+  });
+  return parseKlines(j?.data?.klines ?? []);
+}
+
+async function klineTencent(secid: string, limit: number): Promise<DailyBar[]> {
+  const sym = symFromSecid(secid);
+  const j = await httpJson<any>(`https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${sym},day,,,${limit},qfq`, {
+    referer: "https://gu.qq.com/",
+  });
+  const rows: any[] = j?.data?.[sym]?.qfqday ?? j?.data?.[sym]?.day ?? [];
+  return rows.map((r) => {
+    const [date, open, close, high, low, vol] = r;
+    const h = Number(high);
+    const l = Number(low);
+    const c = Number(close);
+    const hands = Number(vol);
+    return {
+      date: String(date),
+      open: Number(open),
+      close: c,
+      high: h,
+      low: l,
+      volumeHands: hands,
+      amountYuan: Math.round(hands * 100 * ((h + l + c) / 3)),
+      turnoverPct: 0,
+      pct: 0,
+      amountEst: true,
+    };
+  });
+}
+
+async function klineSina(secid: string, limit: number): Promise<DailyBar[]> {
+  const sym = symFromSecid(secid);
+  const j = await httpJson<any[]>(
+    `https://quotes.sina.cn/cn/api/jsonp_v2.php/var%20d=/CN_MarketDataService.getKLineData?symbol=${sym}&scale=240&ma=no&datalen=${limit}`,
+    { referer: "https://finance.sina.com.cn/" },
+  );
+  return (Array.isArray(j) ? j : []).map((r: any) => {
+    const h = Number(r.high);
+    const l = Number(r.low);
+    const c = Number(r.close);
+    const hands = Number(r.volume) / 100; // 新浪给的是股
+    return {
+      date: String(r.day),
+      open: Number(r.open),
+      close: c,
+      high: h,
+      low: l,
+      volumeHands: hands,
+      amountYuan: Math.round(hands * 100 * ((h + l + c) / 3)),
+      turnoverPct: 0,
+      pct: 0,
+      amountEst: true,
+    };
+  });
+}
+
+/**
+ * 日线（前复权）。主源东财 fields2 实测为 日期,开,收,高,低,量,额,振幅,涨跌%,涨跌额,换手；
+ * 被限流时自动退到腾讯 ifzq 再到新浪（后两者没有成交额，会打 amountEst 标记）。
+ */
+export async function fetchDailyBySecid(secid: string, limit = 250): Promise<DailyBar[]> {
+  const providers: [KlineSource, (secid: string, limit: number) => Promise<DailyBar[]>][] = [
+    ["em", klineEastmoney],
+    ["tx", klineTencent],
+    ["sina", klineSina],
+  ];
+  let lastErr: unknown;
+  for (const [name, fn] of providers) {
+    if (name === "em" && Date.now() < emKlineDownUntil) continue;
+    try {
+      const bars = await fn(secid, limit);
+      if (!bars.length) throw new Error("空数据");
+      klineSources.add(name);
+      return bars;
+    } catch (e) {
+      lastErr = e;
+      if (name === "em") emKlineDownUntil = Date.now() + 120_000; // 连续失败就歇 2 分钟，别硬撞
+    }
+  }
+  throw new Error(`日线三个源全部失败 (${secid}): ${(lastErr as Error)?.message}`);
+}
+
+/**
+ * 上证指数 secid。注意 000001 在东财既可能是上证指数(1.000001)也可能是平安银行(0.000001)，
+ * 大盘相关的日线一律走这个常量，别用代码推。
+ */
+export const INDEX_SECID = "1.000001";
+
+export const fetchIndexDaily = (limit = 60): Promise<DailyBar[]> => fetchDailyBySecid(INDEX_SECID, limit);
+
+/** 按 6 位代码取个股日线（沪深主板/创业板）。 */
+export const fetchDaily = (code: string, limit = 250): Promise<DailyBar[]> =>
+  fetchDailyBySecid(eastmoneySecid(code), limit);
+
+/** 股票池：全市场按成交额降序，取前 N 且在交易范围内的主板/创业板。 */
+export async function fetchTopByAmount(count: number): Promise<{ code: string; name: string; amountYuan: number }[]> {
+  const out: { code: string; name: string; amountYuan: number }[] = [];
+  const per = 100;
+  for (let pn = 1; out.length < count && pn <= Math.ceil(count / per) + 4; pn++) {
+    const url =
+      `https://push2delay.eastmoney.com/api/qt/clist/get?pn=${pn}&pz=${per}&po=1&np=1&fltt=2&invt=2&fid=f6` +
+      `&fs=m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23&fields=f12,f14,f6,f2,f3,f20,f21`;
+    const j = await httpJson<{ data?: { diff?: any[] } }>(url, { referer: "https://quote.eastmoney.com/" });
+    const diff = j?.data?.diff ?? [];
+    if (!diff.length) break;
+    for (const d of diff) {
+      const code = String(d.f12 ?? "");
+      if (!inScope(code)) continue;
+      out.push({ code, name: String(d.f14 ?? ""), amountYuan: Number(d.f6) || 0 });
+    }
+  }
+  return out.slice(0, count);
+}
+
+export interface ZtStock {
+  code: string;
+  name: string;
+  /** 连板次数 */
+  lianBan: number;
+  industry: string;
+  amountYuan: number;
+}
+
+/** 涨停池（当日），用来算连板高度与情绪温度。日期用 YYYYMMDD，缺省为今天。 */
+export async function fetchZtPool(date?: string): Promise<ZtStock[]> {
+  const d = date ?? new Date().toISOString().slice(0, 10).replace(/-/g, "");
+  const url =
+    `https://push2ex.eastmoney.com/getTopicZTPool?ut=7eea3edcaed734bea9cbfc24409ed989&dpt=wz.ztzt` +
+    `&Pageindex=0&pagesize=200&sort=fbt%3Aasc&date=${d}`;
+  const j = await httpJson<{ data?: { pool?: any[] } }>(url, { referer: "https://quote.eastmoney.com/" });
+  return (j?.data?.pool ?? []).map((p) => ({
+    code: String(p.c ?? ""),
+    name: String(p.n ?? ""),
+    lianBan: Number(p.lbc ?? 1),
+    industry: String(p.hybk ?? ""),
+    amountYuan: Number(p.amount ?? 0),
+  }));
+}
