@@ -9,6 +9,7 @@ import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { config } from "./config";
 import type { Gate, Scored } from "./factors";
+import { cannotAffordLot } from "./symbols";
 
 export type Action = "buy" | "sell" | "hold";
 
@@ -56,6 +57,12 @@ export interface Model {
 export class FactorModel implements Model {
   readonly name = "factor";
 
+  /**
+   * budgetCny 可注入（测试用），默认取配置的单笔预算。
+   * 买不起一手的候选不进 picks —— 推荐了也执行不了的建议是噪声。
+   */
+  constructor(private budgetCny: number = config.sizeCny) {}
+
   async decide(state: SignalState): Promise<Decision> {
     const t0 = performance.now();
     const probabilities: Record<Action, number> = { buy: 0, sell: 0, hold: 1 };
@@ -63,7 +70,13 @@ export class FactorModel implements Model {
 
     if (state.allowed.buy && state.gate.allowed && state.openSlots > 0) {
       const ok = state.candidates
-        .filter((c) => c.rejects.length === 0 && c.score > 0 && !(c.features.code in state.vetoes))
+        .filter(
+          (c) =>
+            c.rejects.length === 0 &&
+            c.score > 0 &&
+            !cannotAffordLot(c.features.price, this.budgetCny) &&
+            !(c.features.code in state.vetoes),
+        )
         .sort((a, b) => b.score - a.score)
         .slice(0, Math.min(state.openSlots, config.k));
       const sum = ok.reduce((s, c) => s + Math.exp(c.score), 0) || 1;

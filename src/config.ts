@@ -67,6 +67,9 @@ export const config = {
   /** 一次请求问几只（所有问题共享同一 state，并行判定，多问几乎不增加延迟） */
   jevMaxQuestions: num("JEV_MAX_QUESTIONS", 20),
   jevTimeoutMs: num("JEV_TIMEOUT_MS", 15_000),
+  /** 买入决策节奏（毫秒）：连续竞价时段每隔这么久做一次买入决策。
+   *  行情每 3s 一轮，但模型不必每轮都问；退出管理是纯规则，每轮都跑、不花模型。 */
+  decideEveryMs: num("DECIDE_EVERY_MS", 60_000),
   /** LlmAdvisory（盘前情绪 + 个股事件 veto）用的通用 chat 模型，与 Jev 是两个东西 */
   llmBaseUrl: env("LLM_BASE_URL", "https://api.deepseek.com")!,
   llmModel: env("LLM_MODEL", "deepseek-chat")!,

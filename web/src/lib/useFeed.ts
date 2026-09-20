@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useReducer, useState } from "react";
-import type { ConnectionState, FeedState, Fill, Meta, PositionView, TickEvent, Totals } from "./types";
+import type { ConnectionState, EquityPoint, FeedState, Fill, Meta, PositionView, TickEvent, Totals } from "./types";
 
 export const API_URL = (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3005").replace(/\/+$/, "");
 
@@ -77,6 +77,11 @@ function parseMeta(raw: Record<string, unknown>): Meta | null {
     eodOnly: Boolean(raw.eodOnly),
     startedAt: typeof raw.startedAt === "number" ? raw.startedAt : Date.now(),
     port: Number(raw.port) || 3005,
+    decideEveryMs: typeof raw.decideEveryMs === "number" ? raw.decideEveryMs : undefined,
+    bankrollCny: typeof raw.bankrollCny === "number" ? raw.bankrollCny : undefined,
+    sizeCny: typeof raw.sizeCny === "number" ? raw.sizeCny : undefined,
+    minProb: typeof raw.minProb === "number" ? raw.minProb : undefined,
+    forceExitAt: typeof raw.forceExitAt === "string" ? raw.forceExitAt : undefined,
   };
 }
 
@@ -205,6 +210,7 @@ export function useApi() {
     error,
     clearError: () => setError(null),
     scan: () => call<TickEvent>("/scan"),
+    equity: () => call<{ points: EquityPoint[]; totals: Totals }>("/equity", undefined, "GET"),
     fill: (body: { code: string; side: string; qty: number; price?: number; signalId?: string; note?: string }) =>
       call<{ ok: true; fill: Fill; totals: Totals }>("/fill", body),
     removeFill: (id: string) =>

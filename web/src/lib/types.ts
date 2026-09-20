@@ -157,6 +157,20 @@ export interface Meta {
   eodOnly: boolean;
   startedAt: number;
   port: number;
+  /** 决策口径（面板"常设命令"卡用）；旧后端没有这些字段时面板走回退文案 */
+  decideEveryMs?: number;
+  bankrollCny?: number;
+  sizeCny?: number;
+  minProb?: number;
+  forceExitAt?: string;
+}
+
+/** /equity 的权益曲线点（每个交易日一个） */
+export interface EquityPoint {
+  date: string;
+  equity: number;
+  marketValue: number;
+  cash: number;
 }
 
 export type ConnectionState = "connecting" | "live" | "reconnecting";

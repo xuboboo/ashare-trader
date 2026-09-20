@@ -18,7 +18,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "A 股 T+1 决策台",
-  description: "每个交易日三个触发点：盘前闸门、退出窗口、尾盘选股。人工执行，影子记账。",
+  description: "交易时段全程决策：盘前预选、盘中与尾盘按节奏出单，次日 10:00 前无条件清仓。人工执行，影子记账。",
 };
 
 export const viewport: Viewport = {

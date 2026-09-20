@@ -23,6 +23,7 @@ import { roundTrip } from "./costs";
 import type { Scored } from "./factors";
 import { FactorModel, type Decision, type Model, type Pick, type SignalState } from "./model";
 import { hhmmOf } from "./session";
+import { cannotAffordLot } from "./symbols";
 
 export interface JevAnswer {
   type: string;
@@ -54,10 +55,16 @@ export const defaultAsk: JevAsk = async ({ state, questions, timeoutMs }) => {
   };
 };
 
-/** 只问那些已经通过硬约束的候选；按规则分从高到低取前 N。 */
-export function eligible(s: SignalState): Scored[] {
+/** 只问那些已经通过硬约束的候选；按规则分从高到低取前 N。买不起一手的不浪费提问。 */
+export function eligible(s: SignalState, budgetCny: number = config.sizeCny): Scored[] {
   return s.candidates
-    .filter((c) => c.rejects.length === 0 && c.score > 0 && !(c.features.code in s.vetoes))
+    .filter(
+      (c) =>
+        c.rejects.length === 0 &&
+        c.score > 0 &&
+        !cannotAffordLot(c.features.price, budgetCny) &&
+        !(c.features.code in s.vetoes),
+    )
     .sort((a, b) => b.score - a.score)
     .slice(0, config.jevMaxQuestions);
 }
@@ -114,16 +121,20 @@ export class JevModel implements Model {
    */
   constructor(
     private ask: JevAsk = defaultAsk,
-    private opts: { apiKey?: string | null; dataDir?: string } = {},
+    private opts: { apiKey?: string | null; dataDir?: string; budgetCny?: number } = {},
   ) {}
 
   private get apiKey(): string | undefined | null {
     return this.opts.apiKey === undefined ? config.typesafeApiKey : this.opts.apiKey;
   }
 
+  private get budgetCny(): number {
+    return this.opts.budgetCny ?? config.sizeCny;
+  }
+
   async decide(s: SignalState): Promise<Decision> {
     const t0 = performance.now();
-    const list = eligible(s);
+    const list = eligible(s, this.budgetCny);
     const dir = this.opts.dataDir ?? config.dataDir;
 
     if (!s.allowed.buy || !s.gate.allowed || s.openSlots <= 0 || list.length === 0) {
@@ -137,7 +148,7 @@ export class JevModel implements Model {
       return { ...d, modelFailed: true, latencyMs: performance.now() - t0 };
     }
 
-    const costBps = roundTrip(config.sizeCny).bps;
+    const costBps = roundTrip(this.budgetCny).bps;
     const state = buildState(s, list, costBps);
     const questions = buildQuestions(s, list, costBps);
     // 缓存键带上模型 id：换 JEV_MODEL_ID 后不能串用另一个模型的答案

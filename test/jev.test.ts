@@ -45,7 +45,8 @@ function fakeAsk(
   };
 }
 
-const model = (ask: JevAsk, apiKey: string | null = "test-key") => new JevModel(ask, { apiKey, dataDir: TMP });
+const model = (ask: JevAsk, apiKey: string | null = "test-key") =>
+  new JevModel(ask, { apiKey, dataDir: TMP, budgetCny: 50_000 });
 
 afterAll(async () => {
   await rm(TMP, { recursive: true, force: true });
@@ -56,6 +57,12 @@ describe("Jev 模型接入", () => {
     const list = [cand("002156", "甲"), cand("603986", "乙"), cand("000001", "丙", { volumeRatio: 0.4 })];
     const got = eligible(state(list, { vetoes: { "603986": "大额减持" } })).map((c) => c.features.code);
     expect(got).toEqual(["002156"]); // 乙被 veto、丙量比不达标
+  });
+
+  test("预算买不起一手时连问题都不发（330 元问 10.5 元股是浪费）", () => {
+    const list = [cand("002156", "甲")];
+    expect(eligible(state(list), 330)).toEqual([]);
+    expect(eligible(state(list), 3_300).map((c) => c.features.code)).toEqual(["002156"]);
   });
 
   test("没配 key → 降级回规则层并标 modelFailed，但不是不出单", async () => {

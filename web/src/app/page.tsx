@@ -1,6 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import DecisionPanel from "@/components/DecisionPanel/DecisionPanel";
+import EquityStrip from "@/components/EquityStrip/EquityStrip";
 import Feed from "@/components/Feed/Feed";
 import FlowChart from "@/components/FlowChart/FlowChart";
 import Header from "@/components/Header/Header";
@@ -15,6 +17,12 @@ export default function Page() {
   const feed = useFeed();
   const latest = feed.latest;
   const [error, setError] = useState<string | null>(null);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  // 决策的"Xs 前"标签每秒刷新一次就够
+  useEffect(() => {
+    const id = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
 
   // 建议单散落在各个心跳里，按 signalId 汇总；成交状态以最新一次上报为准。
   // 键带上日期与时刻：后端重启后 signalId 会从 0001 重新计数，只用 id 会撞车
@@ -22,13 +30,17 @@ export default function Page() {
   for (const e of feed.events) for (const o of e.orders) byId.set(`${o.signalId}@${o.date} ${o.time}`, o);
   const orders = [...byId.values()];
 
+  // 决策面板的数据：最近一条带 decision 的事件 + 决策事件流（旧→新）
+  const withDecision = feed.events.filter((e) => e.decision);
+  const lastDecisionEvent = withDecision.at(-1) ?? null;
+
   const banners: string[] = [];
   if (latest?.quotes.eodOnly) banners.push("实时链路已降级为日频：只在盘前出一次信号");
   else if (latest && latest.quotes.fails > 0) banners.push(`行情接口失败 ${latest.quotes.fails} 次，连续 3 次将降级`);
   if (latest?.quotes.stale) banners.push(`行情已老化 ${latest.quotes.ageSec}s（阈值内才算活价），本轮不出单也不判成交`);
   if (feed.meta?.calendarStale) banners.push("交易日历不可用，按周一~周五猜测交易日");
   if (latest && !latest.tradingDay) banners.push(`非交易日（${latest.date}），下面是最近一个交易日的复盘快照`);
-  if (latest?.decision?.modelFailed) banners.push("模型本轮失败，已按 hold 处理");
+  if (latest?.decision?.modelFailed) banners.push("模型本轮失败，已按规则层执行");
   if (error) banners.push(`操作未完成：${error}`);
 
   return (
@@ -40,13 +52,25 @@ export default function Page() {
           {b}
         </div>
       ))}
+      <div className="cols">
+        <div className="col">
+          <DecisionPanel
+            event={lastDecisionEvent}
+            history={withDecision}
+            latest={latest}
+            meta={feed.meta}
+            nowMs={nowMs}
+          />
+        </div>
+        <div className="col">
+          <FlowChart events={feed.events} latest={latest} />
+          <EquityStrip totals={latest?.totals ?? null} />
+        </div>
+      </div>
       <Signals allOrders={orders} onFilled={() => void 0} />
       <Positions positions={latest?.positions ?? []} totals={latest?.totals ?? null} />
       <Ledger fillCount={latest?.totals.fills ?? 0} onError={setError} />
       <div className="cols">
-        <div className="col">
-          <FlowChart events={feed.events} latest={latest} />
-        </div>
         <div className="col">
           <Feed events={feed.events} />
         </div>

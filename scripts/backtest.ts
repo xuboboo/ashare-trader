@@ -104,6 +104,8 @@ export interface SimInput {
   from?: string;
   to?: string;
   k?: number;
+  /** 显式传参；默认取 config.bankrollCny。回测结果必须与 .env 无关才可复现、可对比 */
+  bankrollCny?: number;
   sizeCny?: number;
   gainMin?: number;
   gainMax?: number;
@@ -140,7 +142,8 @@ export function simulate(input: SimInput): { result: BtResult; log: string[] } {
     if (!input.quiet) console.log(s);
   };
 
-  const book = new Book(config.bankrollCny);
+  const bankrollCny = input.bankrollCny ?? config.bankrollCny;
+  const book = new Book(bankrollCny);
   let cash = book.cash;
   const dates = indexBars.map((b) => b.date).filter((d) => (!a.from || d >= a.from) && (!a.to || d <= a.to));
   const heldUntil = new Map<string, string>(); // code -> 计划退出日（次日）
@@ -359,7 +362,7 @@ export function simulate(input: SimInput): { result: BtResult; log: string[] } {
   const netBps = round2(grossBps - costBps);
   const meanTripBps = trades ? round2(roundTrips.reduce((s, r) => s + r.bps, 0) / trades) : 0;
   const years = Math.max(0.25, dates.length / 244);
-  const growth = t.equity / config.bankrollCny;
+  const growth = t.equity / bankrollCny;
   const totalReturnPct = (growth - 1) * 100;
   const annualized = growth > 0 ? (Math.pow(growth, 1 / years) - 1) * 100 : -100;
   let peak = -Infinity;
@@ -446,7 +449,7 @@ export async function runBacktest(args: Partial<Args> = {}): Promise<{ result: B
   return { result: r.result, log: [...log, ...r.log] };
 }
 
-function emptyResult(params: string): BtResult {
+function emptyResult(params: string, bankrollCny = config.bankrollCny): BtResult {
   return {
     params,
     trades: 0,
@@ -460,7 +463,7 @@ function emptyResult(params: string): BtResult {
     costYuan: 0,
     grossProfitYuan: 0,
     profitOverCost: 0,
-    finalEquity: config.bankrollCny,
+    finalEquity: bankrollCny,
     totalReturnPct: 0,
     annualizedPct: 0,
     maxDrawdownPct: 0,

@@ -1,8 +1,8 @@
 # ashare-trader — A 股 T+1 决策台
 
-**A 股 T+1 决策台**：把 [Jev](https://ai-sdk.dev/providers/ai-sdk-providers/typesafe-ai)（TypeSafe 的 System One 模型）接进 A 股的尾盘选股决策，
+**A 股 T+1 决策台**：把 [Jev](https://ai-sdk.dev/providers/ai-sdk-providers/typesafe-ai)（TypeSafe 的 System One 模型）接进 A 股的选股决策，
 配上严格到难看的成本核算、日线 T+1 回测，以及"AI 说了不算、硬约束说了算"的执行层。
-它不自动下单 —— 每个交易日只在三个时刻给出可执行的建议：**09:05 盘前闸门、09:30-10:00 持仓退出、14:40-14:57 尾盘选股**。
+它不自动下单 —— **交易时段全程决策**：09:05 盘前预选一次；09:30 起连续竞价时段每 `DECIDE_EVERY_MS`（默认 60s）做一轮买入决策；持仓退出（止损 / 高开减半 / 到点清仓）只要持仓可卖就每轮评估。
 
 > **当前状态：策略未通过自己的回测门槛，停在回测层。**
 > 36 组参数全部净期望为负，最好的一组是 `毛利 +11bp − 成本 11.6bp = 净 −0.58bp`。
@@ -77,7 +77,7 @@ bun run scripts/backtest.ts --from=2024-01-01 --sweep   # 36 组参数扫描
 
 ## 日常怎么用
 
-1. **14:40 前**看一眼"大盘与候选"：闸门关着就不动手，开着就看候选表
+1. **开盘后**看"模型决策"面板：大字结论（买入/观望）与概率条，闸门关着就不动手
 2. 出建议单后，**在券商 App 里手工下单**（行里点"复制"，一行字直接可粘）
 3. 成交了立刻回填：仪表盘表单、`bun run scripts/fill.ts 002156 buy 800 "@61.40"`、或 `POST /fill`
 4. 次日 9:30-10:00 按系统提示的退出动作走（高开减半 / 跌破止损 / 到点清仓）
@@ -89,7 +89,7 @@ bun run scripts/backtest.ts --from=2024-01-01 --sweep   # 36 组参数扫描
 
 ## 接口
 
-只读：`GET /`（元信息 + 最新心跳）、`/history`、`/positions`、`/fills`、`/orders`、`/events`（SSE）。
+只读：`GET /`（元信息 + 最新心跳）、`/history`、`/positions`、`/fills`、`/orders`、`/equity`（权益曲线）、`/events`（SSE）。
 写（只改本地账本，不产生任何委托）：
 
 | 方法 | 作用 | 备注 |

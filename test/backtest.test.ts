@@ -58,7 +58,8 @@ describe("回测引擎", () => {
   });
 
   test("最低佣金与印花税真的计进了成本", () => {
-    const { result } = simulate({ stocks: [stock(setup())], indexBars: indexBars(), k: 1, quiet: true });
+    // 预算与本金显式传参：不隐式依赖 .env（下面 qty/成本断言按 5 万预算、15 万本金写死）
+    const { result } = simulate({ stocks: [stock(setup())], indexBars: indexBars(), k: 1, quiet: true, sizeCny: 50_000, bankrollCny: 150_000 });
     // 4700 股 * ~10.5 元 ≈ 4.9 万元，往返成本约 56 元（万2.5 佣金双边 + 印花税 + 过户 + 经手）
     expect(result.costYuan).toBeGreaterThan(40);
     expect(result.costYuan).toBeLessThan(80);
@@ -85,7 +86,7 @@ describe("回测引擎", () => {
 
   test("高开超过阈值先卖一半", () => {
     const bars = setup({}, { open: 11.2, high: 11.4, low: 11.1, close: 11.3 });
-    const { result } = simulate({ stocks: [stock(bars)], indexBars: indexBars(), k: 1, quiet: true });
+    const { result } = simulate({ stocks: [stock(bars)], indexBars: indexBars(), k: 1, quiet: true, sizeCny: 50_000, bankrollCny: 150_000 });
     const trim = result.trips.find((x) => x.note.includes("高开"))!;
     expect(trim).toBeTruthy();
     expect(trim.qty).toBe(2300); // 4700 的一半按 100 股取整

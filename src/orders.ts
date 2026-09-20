@@ -58,12 +58,12 @@ const nextId = (date: string) => `S${date.replace(/-/g, "")}-${(++seq).toString(
 /** 新建建议单时，只看得到创建那一刻的现价；之后的极值由 updateResting 累加。 */
 const resting = (price: number) => ({ seenLow: price, seenHigh: price, restingSince: Date.now() });
 
-/** 尾盘开仓建议单。不可买（买不起一手 / 全否决）时返回 null。 */
-export function makeBuyOrder(scored: Scored, clock: Clock, vetoReason?: string): SuggestedOrder | null {
+/** 尾盘/盘中开仓建议单。不可买（买不起一手 / 全否决）时返回 null。sizeCny 可注入（测试用）。 */
+export function makeBuyOrder(scored: Scored, clock: Clock, vetoReason?: string, sizeCny: number = config.sizeCny): SuggestedOrder | null {
   const f = scored.features;
   const rejects = vetoReason ? [...scored.rejects, vetoReason] : scored.rejects;
   if (rejects.length) return null;
-  const qty = sharesForBudget(f.price, config.sizeCny);
+  const qty = sharesForBudget(f.price, sizeCny);
   if (qty < 100) {
     return null; // 一手都买不起，直接不出单
   }

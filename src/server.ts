@@ -38,6 +38,9 @@ export function startServer(engine: Engine) {
       if (pathname === "/orders" && req.method === "GET") return json(engine.pendingOrders);
       if (pathname === "/fills" && req.method === "GET")
         return json({ fills: engine.fillLog(Number(url.searchParams.get("n")) || 50), totals: engine.book.totals() });
+      // 权益曲线（每个交易日一个点，落盘在 positions.json）：面板的"一周盈亏"视图用
+      if (pathname === "/equity" && req.method === "GET")
+        return json({ points: engine.book.equityCurve, totals: engine.book.totals() });
 
       if (pathname === "/scan" && req.method === "POST") {
         const e = await engine.round("force-scan");

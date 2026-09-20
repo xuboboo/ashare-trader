@@ -63,6 +63,15 @@ describe("FactorModel", () => {
     expect(d.picks.length).toBeGreaterThan(0);
   });
 
+  test("预算买不起一手时不出推荐（1 万本金口径）", async () => {
+    const poor = new FactorModel(330); // 330 元连 10.5 元股的一手都买不起
+    const d = await poor.decide({ ...base, candidates: candidates() });
+    expect(d.picks).toHaveLength(0);
+    expect(d.action).toBe("hold");
+    const rich = await new FactorModel(50_000).decide({ ...base, candidates: candidates() });
+    expect(rich.picks.length).toBeGreaterThan(0);
+  });
+
   test("候选全被否决时是 hold，而不是硬凑一单", async () => {
     const dead = [scoreStock(featuresFromSnapshot(mkSnap({ volumeRatio: 0.2, price: 9.9 }), "2026-09-18"))];
     expect(dead[0]!.rejects.length).toBeGreaterThan(0);

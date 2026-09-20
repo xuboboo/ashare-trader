@@ -9,7 +9,8 @@ const scored = (over = {}) => scoreStock(featuresFromSnapshot(mkSnap(over), cloc
 
 describe("建议单", () => {
   test("通过筛选时给出可手工执行的限价区间", () => {
-    const o = makeBuyOrder(scored(), clock)!;
+    // 预算显式传参：不隐式依赖 .env 的 SIZE_CNY
+    const o = makeBuyOrder(scored(), clock, undefined, 50_000)!;
     expect(o).toBeTruthy();
     expect(o.side).toBe("buy");
     expect(o.qty % 100).toBe(0);
@@ -21,6 +22,14 @@ describe("建议单", () => {
     expect(o.costBps).toBeGreaterThan(10);
     expect(o.status).toBe("pending");
     expect(o.reason).toContain("涨幅");
+  });
+
+  test("1 万本金口径：3300 元预算在 10.5 元买 300 股，够不着的高价股不出单", () => {
+    const o = makeBuyOrder(scored(), clock, undefined, 3_300)!;
+    expect(o).toBeTruthy();
+    expect(o.qty).toBe(300);
+    expect(o.warn).toContain("最低佣金"); // 3300 元吃 5 元最低佣金，必须亮出来
+    expect(makeBuyOrder(scored({ price: 33.5, prevClose: 32, vwap: 32.5, limitUp: 35.2 }), clock, undefined, 3_300)).toBeNull();
   });
 
   test("被否决的股票不出单", () => {

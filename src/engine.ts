@@ -93,6 +93,10 @@ export class Engine {
   private zt = { count: 0, maxLianBan: 0, industries: new Map<string, number>() };
   /** 本轮的大盘上下文，传给决策模型的 state 用 */
   private lastIndex: { price: number; pct: number; amountYi: number; ma5: number | null } | null = null;
+  /** 盘前预选已做过的交易日（每日一次） */
+  private preBuyDate = "";
+  /** 上一次盘中买入决策时刻（epoch ms），配合 DECIDE_EVERY_MS 控制节奏 */
+  private lastBuyMs = 0;
   private opts: EngineOpts;
 
   constructor(opts: EngineOpts = {}) {
@@ -276,29 +280,57 @@ export class Engine {
       }));
 
     // ---- 决策与出单 ----
+    // 交易时段全程决策（不再只限尾盘）：
+    //   盘前 09:05 起每日一次预选（用最近收盘快照，只出观点不下单）；
+    //   连续竞价全程按 DECIDE_EVERY_MS 节奏做买入决策并出建议单；
+    //   退出管理只要持仓可卖、行情可用就每轮评估（纯规则，不花模型调用）。
     const trigger = forceTrigger ?? triggerOf(phase, clock.minutes);
     const force = forceTrigger === "force-scan";
     const newOrders: SuggestedOrder[] = [];
     let decision: Decision | null = null;
 
-    // force-scan 允许在收盘后跑：拿最近一个交易日的快照做复盘，看今天到底会出什么单
-    if (force || (trading && canTrade(phase))) {
-      if ((trigger === "盘前" || force) && this.biasDate !== clock.date) await this.refreshBias(clock, index);
-      if ((trigger === "尾盘选股" || force) && scored.length && (!trading || usable)) {
+    if (force || trading) {
+      if ((trading || force) && clock.minutes >= config.session.premarketMin && this.biasDate !== clock.date) {
+        await this.refreshBias(clock, index);
+      }
+
+      const hasSellable = [...this.book.positions.values()].some((p) => p.sellable > 0);
+      if (trading && liveQuotes(phase) && usable && hasSellable) {
+        newOrders.push(...this.exitOrders(clock));
+      }
+
+      const nowMs = Date.now();
+      if (
+        buyDecisionDue({
+          force,
+          trading,
+          liveNow: liveQuotes(phase),
+          usable,
+          scoredCount: scored.length,
+          minutes: clock.minutes,
+          preBuyDone: this.preBuyDate === clock.date,
+          lastBuyMs: this.lastBuyMs,
+          nowMs,
+        })
+      ) {
         decision = await this.decide(clock, scored, gate, "buy");
-        for (const pick of decision?.picks ?? []) {
-          const s = scored.find((x) => x.features.code === pick.code);
-          if (!s) continue;
-          const vetoReason = this.bias?.vetoes[s.features.code];
-          const order = makeBuyOrder(s, clock, vetoReason);
-          if (order) {
-            newOrders.push(order);
-            this.pending.set(order.signalId, order);
+        const preMarket = clock.minutes >= config.session.premarketMin && clock.minutes < config.session.morningStart;
+        if (trading && preMarket) this.preBuyDate = clock.date;
+        else this.lastBuyMs = nowMs;
+
+        // 盘前预选只出观点；连续竞价与 force（复盘）出建议单
+        if (force || (trading && liveQuotes(phase) && usable)) {
+          for (const pick of decision?.picks ?? []) {
+            const s = scored.find((x) => x.features.code === pick.code);
+            if (!s) continue;
+            const vetoReason = this.bias?.vetoes[s.features.code];
+            const order = makeBuyOrder(s, clock, vetoReason);
+            if (order) {
+              newOrders.push(order);
+              this.pending.set(order.signalId, order);
+            }
           }
         }
-      } else if (trigger === "退出窗口" && liveQuotes(phase) && usable) {
-        decision = await this.decide(clock, scored, gate, "manage");
-        newOrders.push(...this.exitOrders(clock));
       }
     }
 
@@ -575,6 +607,12 @@ export class Engine {
       eodOnly: this.eodOnly,
       startedAt: this.startedAtMs,
       port: config.port,
+      // 决策口径（面板"常设命令"卡用）：节奏、单笔预算、本金、采纳阈值、清仓时点
+      decideEveryMs: config.decideEveryMs,
+      bankrollCny: config.bankrollCny,
+      sizeCny: config.sizeCny,
+      minProb: config.jevMinProb,
+      forceExitAt: hhmmOf(config.forceExitMin),
     };
   }
 
@@ -589,11 +627,39 @@ export class Engine {
 }
 
 function triggerOf(phase: Phase, minutes: number): string {
-  if (phase === "pre-open") return minutes >= config.session.premarketMin ? "盘前" : "盘前等待";
+  if (phase === "pre-open") return minutes >= config.session.premarketMin ? "盘前预选" : "盘前等待";
+  if (phase === "call-auction" || phase === "no-cancel") return "集合竞价";
   if (!canTrade(phase)) return phase === "lunch" ? "午休" : "心跳";
   if (minutes < config.session.morningStart + 30) return "退出窗口";
-  if (minutes >= config.session.tailStart) return "尾盘选股";
-  return "盘中心跳";
+  if (minutes >= config.session.tailStart) return "尾盘决策";
+  return "盘中决策";
+}
+
+/**
+ * 买入决策这一轮该不该跑。纯函数，单测覆盖：
+ *  - 盘前（09:05 到开盘）每个交易日一次预选，用最近收盘快照；
+ *  - 连续竞价全程按 DECIDE_EVERY_MS 节奏决策（不再只限尾盘）；
+ *  - 集合竞价/午休/收盘竞价/非交易日不跑（价格不可靠或没有意义）；
+ *  - force（手动 /scan）无视节奏。
+ */
+export function buyDecisionDue(a: {
+  force: boolean;
+  trading: boolean;
+  /** liveQuotes(phase)：只有连续竞价的价格适合做买入判定 */
+  liveNow: boolean;
+  usable: boolean;
+  scoredCount: number;
+  minutes: number;
+  preBuyDone: boolean;
+  lastBuyMs: number;
+  nowMs: number;
+}): boolean {
+  if (a.scoredCount <= 0) return false;
+  if (a.force) return true;
+  if (!a.trading) return false;
+  const preMarket = a.minutes >= config.session.premarketMin && a.minutes < config.session.morningStart;
+  if (preMarket) return !a.preBuyDone;
+  return a.liveNow && a.usable && a.nowMs - a.lastBuyMs >= config.decideEveryMs;
 }
 
 export function clockNow(d: Date = new Date()): EngineClock {

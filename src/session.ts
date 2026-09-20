@@ -72,8 +72,9 @@ export function sessionNow(d: Date = new Date(), tradingDay = true): Session {
   const { ymd, minutes } = bj(d);
   const phase = phaseOf(ymd, minutes, tradingDay);
   let next = "-";
-  if (phase === "after-hours") next = "次日 09:05 盘前扫描";
-  else if (minutes < S.tailStart) next = `${pad(S.tailStart)} 尾盘选股`;
+  if (phase === "after-hours") next = "次日 09:05 盘前预选";
+  else if (phase === "pre-open") next = `${pad(S.premarketMin)} 盘前预选`;
+  else if (minutes < S.tailStart) next = "全程决策中（盘中+尾盘同规则）";
   else if (minutes < S.afternoonEnd) next = `${pad(S.afternoonEnd)} 收盘前最后窗口`;
   return { phase, ymd, minutes, next };
 }

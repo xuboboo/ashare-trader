@@ -46,6 +46,10 @@ export function sharesForBudget(price: number, budgetCny: number): number {
   return Math.floor(budgetCny / price / LOT) * LOT;
 }
 
+/** 该价格按预算是否连一手都买不起。买不起的候选不进模型提问，免得推荐了也执行不了。 */
+export const cannotAffordLot = (price: number, budgetCny: number): boolean =>
+  sharesForBudget(price, budgetCny) < LOT;
+
 /** 距涨停/跌停还有多少 bps，用于判断"还能不能买到"。 */
 export function distanceBps(price: number, ref: number) {
   return ref > 0 ? ((ref - price) / price) * 10_000 : 0;
