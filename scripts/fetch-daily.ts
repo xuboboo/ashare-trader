@@ -58,8 +58,10 @@ async function main() {
     }
     try {
       const bars = await fetchDaily(code, args.days);
-      if (bars.length < 60) {
-        failed.push(`${code}(${bars.length}根，可能上市太短)`);
+      // 上市时长是“能不能用”的硬条件：日线不够 MIN_LIST_DAYS 根就进不了样本
+      // （实盘快照里没有上市日期字段，这条约束只能在数据层生效）
+      if (bars.length < config.minListDays) {
+        failed.push(`${code}(只有 ${bars.length} 根日线 < MIN_LIST_DAYS=${config.minListDays}，上市太短或停牌太多)`);
         continue;
       }
       await Bun.write(

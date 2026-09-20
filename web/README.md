@@ -32,3 +32,12 @@ bun run dev      # http://localhost:3006
 - `src/components/Positions` —— 持仓：可卖 / 今日买入冻结分列，止损与浮动盈亏
 - `src/components/Signals` —— 建议单卡片 + 复制下单指令 + 手工回填表单
 - `src/components/Feed` —— 心跳流
+
+## 相关文档
+
+后端与全局：[../README.md](../README.md)、[docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md)、
+[docs/DATA.md](../docs/DATA.md)（L1 与延迟实测）、[docs/STRATEGY.md](../docs/STRATEGY.md)（回测结论）、
+[docs/USAGE.md](../docs/USAGE.md)、[docs/COMPLIANCE.md](../docs/COMPLIANCE.md)。
+
+前端约定：无 CSS Modules，组件样式集中在 `src/app/globals.css` 的设计变量与类名里；
+颜色按 **A 股习惯红涨绿跌**；时间统一按 `Asia/Shanghai` 计算，不依赖浏览器时区。
