@@ -7,3 +7,4 @@ test/tmp-*
 web/.next
 web/node_modules
 web/out
+.mimosa/

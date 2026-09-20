@@ -1,5 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { rm } from "node:fs/promises";
+import { collapseJevPrefix } from "../src/config";
 import { featuresFromSnapshot, scoreStock, type Scored } from "../src/factors";
 import { buildState, eligible, type JevAsk, JevModel } from "../src/jev";
 import { roundTrip } from "../src/costs";
@@ -134,5 +135,19 @@ describe("Jev 模型接入", () => {
     );
     expect(seen.calls).toBe(0);
     expect(d.action).toBe("hold");
+  });
+});
+
+describe("collapseJevPrefix：环境变量写重前缀时收敛", () => {
+  test("jev-jev-latest → jev-latest", () => {
+    expect(collapseJevPrefix("jev-jev-latest")).toBe("jev-latest");
+  });
+  test("正常 id 原样保留", () => {
+    expect(collapseJevPrefix("jev-latest")).toBe("jev-latest");
+    expect(collapseJevPrefix("jev-1.13.0")).toBe("jev-1.13.0");
+  });
+  test("不带 jev- 前缀的 id 不强加前缀，只去空白", () => {
+    expect(collapseJevPrefix("latest")).toBe("latest");
+    expect(collapseJevPrefix("  jev-latest ")).toBe("jev-latest");
   });
 });

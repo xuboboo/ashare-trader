@@ -140,7 +140,12 @@ export class JevModel implements Model {
     const costBps = roundTrip(config.sizeCny).bps;
     const state = buildState(s, list, costBps);
     const questions = buildQuestions(s, list, costBps);
-    const cacheKey = join(dir, "llm", `jev-${s.date}-${Bun.hash(JSON.stringify({ state, questions })).toString(36)}.json`);
+    // 缓存键带上模型 id：换 JEV_MODEL_ID 后不能串用另一个模型的答案
+    const cacheKey = join(
+      dir,
+      "llm",
+      `jev-${s.date}-${Bun.hash(JSON.stringify({ model: config.jevModelId, state, questions })).toString(36)}.json`,
+    );
 
     let reply: JevReply | null = null;
     try {

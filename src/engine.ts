@@ -76,7 +76,8 @@ export class Engine {
   private history: TickEvent[] = [];
   private listeners = new Set<(e: TickEvent) => void>();
   private seq = 0;
-  private inFlight = false;
+  /** 在途轮次的 promise；null = 空闲。round() 靠它串行化。 */
+  private inFlight: Promise<TickEvent> | null = null;
   private stopped = false;
 
   private snapshots = new Map<string, Snapshot>();
@@ -175,19 +176,23 @@ export class Engine {
     this.stopped = true;
   }
 
-  /** 一轮：拉行情 -> 算因子 -> 按调度点出单 -> 影子撮合 -> 发事件。 */
+  /** 一轮：拉行情 -> 算因子 -> 按调度点出单 -> 影子撮合 -> 发事件。
+   *  单在途：上一轮没跑完就等它结束，再排自己的一轮，绝不并发打接口；
+   *  也绝不把上一轮的旧事件当本轮结果返回 —— 否则 /scan 会拿到 decision 为空的心跳，
+   *  降级（modelFailed）这类信息就"看不见"了。 */
   async round(forceTrigger?: string): Promise<TickEvent> {
-    if (this.inFlight) {
-      // 单在途：迟到即 hold，绝不并发打接口
-      const last = this.history[this.history.length - 1];
-      if (last) return last;
+    while (this.inFlight) {
+      try {
+        await this.inFlight;
+      } catch {
+        /* 上一轮失败也照常排自己 */
+      }
     }
-    this.inFlight = true;
-    const clock = clockNow();
+    this.inFlight = this.roundInner(clockNow(), forceTrigger);
     try {
-      return await this.roundInner(clock, forceTrigger);
+      return await this.inFlight;
     } finally {
-      this.inFlight = false;
+      this.inFlight = null;
     }
   }
 

@@ -12,6 +12,9 @@ export const hhmm = (s: string, fallback: number): number => {
   return m ? Number(m[1]) * 60 + Number(m[2]) : fallback;
 };
 
+/** Jev 模型 id 约定形如 jev-latest；环境变量里手滑写重前缀（jev-jev-…）时收敛成一个 */
+export const collapseJevPrefix = (id: string): string => id.trim().replace(/^(?:jev-)+/, "jev-");
+
 export const config = {
   /** 行情源 */
   universeSize: num("UNIVERSE_SIZE", 300),
@@ -58,7 +61,7 @@ export const config = {
   /** TypeSafe 的 System One 模型 Jev：不生成文本，输入 state + 问题，返回带概率的结构化判断 */
   typesafeApiKey: env("TYPESAFE_AI_API_KEY"),
   typesafeBaseUrl: env("TYPESAFE_BASE_URL", "https://api.typesafe.ai/v1")!,
-  jevModelId: env("JEV_MODEL_ID", "jev-latest")!,
+  jevModelId: collapseJevPrefix(env("JEV_MODEL_ID", "jev-latest")!),
   /** 只采纳概率高于此值的候选；太低就是拿模型当噪声放大器 */
   jevMinProb: num("JEV_MIN_PROB", 0.55),
   /** 一次请求问几只（所有问题共享同一 state，并行判定，多问几乎不增加延迟） */
