@@ -13,7 +13,11 @@ import type {
   Totals,
 } from "./types";
 
-export const API_URL = (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3005").replace(/\/+$/, "");
+/** 后端地址：构建期/部署期配置（运营者设置，非终端用户输入），只允许 http/https。 */
+export const API_URL = (() => {
+  const raw = (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3005").replace(/\/+$/, "");
+  return /^https?:\/\//.test(raw) ? raw : "http://localhost:3005";
+})();
 
 const CAP = 1000;
 const BACKOFF_MIN = 1000;

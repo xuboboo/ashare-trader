@@ -10,7 +10,7 @@ import Ledger from "@/components/Ledger/Ledger";
 import Positions from "@/components/Positions/Positions";
 import Signals from "@/components/Signals/Signals";
 import StatsRow from "@/components/StatsRow/StatsRow";
-import { useFeed } from "@/lib/useFeed";
+import { useFeed, API_URL } from "@/lib/useFeed";
 import type { BrokerStatus, SuggestedOrder } from "@/lib/types";
 
 export default function Page() {
@@ -24,10 +24,10 @@ export default function Page() {
     const id = setInterval(() => setNowMs(Date.now()), 1000);
     return () => clearInterval(id);
   }, []);
-  // QMT sidecar 状态：30s 轮询一次（不可达时按钮自然隐藏）
+  // QMT sidecar 状态：30s 轮询一次（不可达时按钮自然隐藏）。地址统一走 API_URL（http/https 已校验）
   useEffect(() => {
     const load = () =>
-      fetch(`${(process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3005").replace(/\/+$/, "")}/broker`)
+      fetch(`${API_URL}/broker`)
         .then((r) => (r.ok ? r.json() : null))
         .then((j) => setBroker(j as BrokerStatus))
         .catch(() => setBroker(null));
