@@ -49,26 +49,26 @@ describe("建议单", () => {
 });
 
 describe("纸面撮合（保守口径）", () => {
-  test("成交用下一轮观测价 + 滑点，不拿下单那一刻的参考价占便宜", () => {
+  test("成交价吃真实对手价：买吃卖一，不拿下单那一刻的参考价占便宜", () => {
     const o = makeBuyOrder(scored(), clock)!; // priceRef 10.5, limitHigh 10.52
     updateResting(o, mkSnap({ price: 10.51, low: 10.4, high: 10.6 }));
     const fill = tryPaperFill(o, mkSnap({ price: 10.51, low: 10.4, high: 10.6 }), clock)!;
-    expect(fill.price).toBe(10.52); // 10.51 + 1 tick 被限价钳住
+    expect(fill.price).toBe(10.51); // 立即吃卖一：真实可得价，而非 last+1tick 的合成滑点
     expect(fill.spreadBps).toBeGreaterThan(0); // 成交瞬间记录了盘口价差
     expect(fill.price).toBeGreaterThan(o.priceRef);
   });
 
-  test("价格跑到限价之上就是追价失败，不成交（也不拿之后的好价补）", () => {
+  test("价格跑到限价之上就是追价失败：只在自己限价内成交", () => {
     const o = makeBuyOrder(scored({ price: 10.5 }), clock)!;
     // 挂单前的全天低点不能替我们成交：只更新“挂单之后”的观察价
     o.seenLow = o.seenHigh = o.priceRef;
-    updateResting(o, mkSnap({ price: 10.9, low: 10.85, high: 10.95 }));
-    // seenLow 仍等于创建时的现价，低于限价 → 可成交，但成交价取当前观测价并被限价钳住
-    const fill = tryPaperFill(o, mkSnap({ price: 10.9, low: 10.85, high: 10.95 }), clock)!;
+    updateResting(o, mkSnap({ price: 10.9, low: 10.85, high: 10.95, bids: [{ p: 10.89, v: 100 }], asks: [{ p: 10.92, v: 100 }] }));
+    // seenLow 仍等于创建时的现价，低于限价 → 可成交，但成交价取卖一并被限价钳住
+    const fill = tryPaperFill(o, mkSnap({ price: 10.9, low: 10.85, high: 10.95, bids: [{ p: 10.89, v: 100 }], asks: [{ p: 10.92, v: 100 }] }), clock)!;
     expect(fill.price).toBe(o.limitHigh);
     // 而挂单后价格一路向上、从未回到限价：把 seenLow 推高就该判不成交
     o.seenLow = 10.95;
-    expect(tryPaperFill(o, mkSnap({ price: 10.95, low: 10.9, high: 11 }), clock)).toBeNull();
+    expect(tryPaperFill(o, mkSnap({ price: 10.95, low: 10.9, high: 11, bids: [{ p: 10.95, v: 100 }], asks: [{ p: 10.96, v: 100 }] }), clock)).toBeNull();
   });
 
   test("卖单跌穿限价：按限价成交，不美化成更高的价", () => {
@@ -79,7 +79,8 @@ describe("纸面撮合（保守口径）", () => {
     const pos = book.positions.get("600000")!;
     const sell = makeExitOrder(pos, mkSnap({ price: 10, prevClose: 10.5 }), { date: "2026-09-21", time: "09:35" }, "止损", 1000)!;
     expect(sell.limitLow).toBe(9.98);
-    const fill = tryPaperFill(sell, mkSnap({ price: 9.5, prevClose: 10.5, high: 10.5, low: 9.4 }), clock)!;
+    // 卖出打真实买一 9.97：低于限价带 → 被限价托住按 9.98 成交
+    const fill = tryPaperFill(sell, mkSnap({ price: 9.5, prevClose: 10.5, high: 10.5, low: 9.4, bids: [{ p: 9.97, v: 100 }], asks: [{ p: 9.99, v: 100 }] }), clock)!;
     expect(fill.price).toBe(sell.limitLow); // 被限价托住，不会记成 10.4 那种好看价
   });
 

@@ -74,7 +74,7 @@ export default function DecisionPanel({ event, history, latest, meta, nowMs }: P
 
       <div className="decisionLabel">常设命令 · STANDING ORDER</div>
       <div className="decisionOrder">
-        {`> 盘前预选一次，开盘后全程决策。概率 ≥ ${minProb} 才买，T+1：次日 ${exitAt} 前无条件清仓。本金 ¥${bankroll} · 单笔 ¥${size} · 止损 ${stop}。`}
+        {`> 盘前预选一次，开盘后全程决策。概率 ≥ ${minProb} 才买，隔夜期限：次日 ${exitAt} 前清仓（策略期限，非交易所规定）。本金 ¥${bankroll} · 单笔 ¥${size} · 止损 ${stop}。`}
       </div>
 
       <div className="decisionLabel" style={{ marginTop: 14 }}>

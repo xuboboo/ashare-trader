@@ -46,7 +46,10 @@ export const config = {
   maxDayLossPct: num("MAX_DAY_LOSS_PCT", 3),
   /** 回撤闸：权益自峰值回撤达到此百分比停止开仓，创新高后自动恢复；0 = 关闭 */
   maxDrawdownPct: num("MAX_DRAWDOWN_PCT", 10),
+  /** 次日开盘高开超过该百分比先卖一半（相对买入成本的开盘浮盈，当日只评估一次）。 */
   gapTrimPct: num("GAP_TRIM_PCT", 3),
+  /** 分时均线弱势确认轮数：连续跌破 VWAP 这么多轮才离场，防 3 秒 L1 噪声；1 = 一次跌破即走 */
+  vwapConfirmRounds: num("VWAP_CONFIRM_ROUNDS", 2),
   /** 次日无条件清仓 */
   forceExitMin: hhmm(env("FORCE_EXIT_AT", "10:00")!, 600),
 

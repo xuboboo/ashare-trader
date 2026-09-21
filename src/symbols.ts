@@ -50,6 +50,12 @@ export function sharesForBudget(price: number, budgetCny: number): number {
 export const cannotAffordLot = (price: number, budgetCny: number): boolean =>
   sharesForBudget(price, budgetCny) < LOT;
 
+/**
+ * 整手约束下的"卖一半"：向下取整到手，不足一手返回 0（无法分批，维持全仓由其他规则处理）。
+ * 策略定义明确固定：300 股卖 100（不是 200）；100 股不能拆。沪深规则禁止把整手余额拆出零股。
+ */
+export const lotAwareHalfQty = (qty: number): number => Math.floor(qty / 2 / LOT) * LOT;
+
 /** 距涨停/跌停还有多少 bps，用于判断"还能不能买到"。 */
 export function distanceBps(price: number, ref: number) {
   return ref > 0 ? ((ref - price) / price) * 10_000 : 0;

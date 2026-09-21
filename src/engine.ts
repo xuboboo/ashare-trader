@@ -21,6 +21,7 @@ import { fetchIndexDaily, fetchIndex, fetchZtPool, fetchSnapshots, quoteAgeSec, 
 import { riskBrake, type RiskBrake } from "./risk";
 import { bj, canTrade, hhmmOf, liveQuotes, phaseOf, type Phase, sessionNow } from "./session";
 import { Book, makeFill, round2, type Fill } from "./state";
+import { lotAwareHalfQty } from "./symbols";
 import { Universe } from "./universe";
 
 /** 决策用的一刻：日期、时间、当日分钟数 */
@@ -527,26 +528,57 @@ export class Engine {
     });
   }
 
-  /** 持仓退出建议单：次日到点清仓优先，其次高开减半，最后止损。 */
+  /**
+   * 持仓退出阶梯（每轮评估，规则间互斥触发、谁先命中执行谁）：
+   *   1. 开盘浮盈 ≥ GAP_TRIM_PCT（相对买入成本，只评估一次，卖整手约束下的一半）
+   *   2. 到点 FORCE_EXIT_AT 无条件清仓（策略期限，非交易所规定）
+   *   3. 跌破止损价全走
+   *   4. 跌破分时均线连续 VWAP_CONFIRM_ROUNDS 轮 → 弱势离场
+   * 触发价只是"发单信号"，不是保证成交价 —— 成交以 PAPER 撮合的对手价为准。
+   */
   private exitOrders(clock: EngineClock): SuggestedOrder[] {
     const out: SuggestedOrder[] = [];
     for (const p of this.book.positions.values()) {
       if (p.sellable <= 0) continue;
       const sn = this.snapshots.get(p.code);
       if (!sn) continue;
-      const gapPct = ((sn.price - p.lastPrice) / p.lastPrice) * 100;
-      let order: SuggestedOrder | null = null;
-      if (clock.minutes >= config.forceExitMin) {
-        order = makeExitOrder(p, sn, clock, `到点 ${hhmmOf(config.forceExitMin)} 无条件清仓（T+1 次日必须走）`, p.sellable);
-      } else if (gapPct >= config.gapTrimPct) {
-        const half = Math.floor(p.sellable / 2 / 100) * 100;
-        if (half >= 100) order = makeExitOrder(p, sn, clock, `高开 ${gapPct.toFixed(2)}% ≥ ${config.gapTrimPct}%，先卖一半`, half);
-      } else if (sn.price <= p.stopPrice) {
-        order = makeExitOrder(p, sn, clock, `跌破止损 ${p.stopPrice}`, p.sellable);
-      } else if (sn.vwap && sn.price < sn.vwap && clock.minutes >= config.session.morningStart + 15) {
-        order = makeExitOrder(p, sn, clock, "跌破分时均线，弱势离场", p.sellable);
+
+      // ---- 1) 开盘浮盈止盈：当日只评估一次，以今日开盘价对成本计（GPT 复核采纳：
+      //         旧实现用 3 秒价变动当"高开"，实为永远打不中的死代码）----
+      if (!p.openingTpDone && sn.open > 0 && p.avgPrice > 0) {
+        p.openingTpDone = true; // 无论是否触发，当日只评估这一次
+        const openPnlPct = ((sn.open - p.avgPrice) / p.avgPrice) * 100;
+        if (openPnlPct >= config.gapTrimPct) {
+          const half = lotAwareHalfQty(p.sellable);
+          if (half >= 100) {
+            const o = makeExitOrder(p, sn, clock, `开盘浮盈 ${openPnlPct.toFixed(2)}% ≥ ${config.gapTrimPct}%，先卖一半`, half);
+            if (o) out.push(o);
+          }
+          // half < 100：整手约束下无法分批，维持全仓交由止损/期限规则处理
+        }
       }
-      if (order) out.push(order);
+
+      // ---- 2) 硬期限 / 3) 止损 ----
+      if (clock.minutes >= config.forceExitMin) {
+        const o = makeExitOrder(p, sn, clock, `到点 ${hhmmOf(config.forceExitMin)} 无条件清仓（策略期限）`, p.sellable);
+        if (o) out.push(o);
+        continue;
+      }
+      if (sn.price <= p.stopPrice) {
+        const o = makeExitOrder(p, sn, clock, `跌破止损 ${p.stopPrice}`, p.sellable);
+        if (o) out.push(o);
+        continue;
+      }
+
+      // ---- 4) 分时均线弱势：连续确认轮数防 3 秒噪声 ----
+      if (clock.minutes >= config.session.morningStart + 15 && sn.vwap > 0) {
+        if (sn.price < sn.vwap) p.vwapBelowRounds = (p.vwapBelowRounds ?? 0) + 1;
+        else p.vwapBelowRounds = 0;
+        if ((p.vwapBelowRounds ?? 0) >= config.vwapConfirmRounds) {
+          const o = makeExitOrder(p, sn, clock, "跌破分时均线，弱势离场", p.sellable);
+          if (o) out.push(o);
+        }
+      }
     }
     return out;
   }

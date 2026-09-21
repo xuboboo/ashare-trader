@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { marketGate } from "../src/factors";
+import { lotAwareHalfQty } from "../src/symbols";
 
 const alive = { price: 3926, amountYi: 900 };
 const above = 3900;
@@ -30,5 +31,14 @@ describe("大盘闸门：盘中成交额按节奏折算", () => {
   test("其他否决项不受折算影响：跌破 5 日线 / 涨停冰点照关", () => {
     expect(marketGate({ price: 3800, amountYi: 900 }, 3885, 28, 5).allowed).toBe(false);
     expect(marketGate(alive, above, 10, 5).allowed).toBe(false);
+  });
+});
+
+describe("整手约束的卖一半（lotAwareHalfQty）", () => {
+  test("向下取整到手；300 卖 100；100 无法分批返回 0", () => {
+    expect(lotAwareHalfQty(200)).toBe(100);
+    expect(lotAwareHalfQty(400)).toBe(200);
+    expect(lotAwareHalfQty(300)).toBe(100);
+    expect(lotAwareHalfQty(100)).toBe(0);
   });
 });

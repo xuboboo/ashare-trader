@@ -48,6 +48,10 @@ export interface Position {
   openDate: string;
   stopPrice: number;
   lastPrice: number;
+  /** 开盘浮盈止盈：当日已评估过一次（无论触发与否），不重复执行 */
+  openingTpDone?: boolean;
+  /** 分时均线弱势确认：连续跌破 VWAP 的轮数 */
+  vwapBelowRounds?: number;
 }
 
 export interface EquityPoint {
