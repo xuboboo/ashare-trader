@@ -58,6 +58,8 @@ export const config = {
   gapTrimPct: num("GAP_TRIM_PCT", 3),
   /** 分时均线弱势确认轮数：连续跌破 VWAP 这么多轮才离场，防 3 秒 L1 噪声；1 = 一次跌破即走 */
   vwapConfirmRounds: num("VWAP_CONFIRM_ROUNDS", 2),
+  /** 开盘稳定期（分钟）：开盘后这段时间只观察不出新买入建议（退出管理照常），让开盘脉冲先走出来 */
+  openDelayMin: num("OPEN_DELAY_MIN", 15),
   /** 次日无条件清仓 */
   forceExitMin: hhmm(env("FORCE_EXIT_AT", "10:00")!, 600),
 

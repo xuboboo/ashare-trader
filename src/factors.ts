@@ -115,6 +115,10 @@ export function scoreStock(
   const liqScore = clamp01(Math.log10(Math.max(1, f.amountYuan / 1e8)) / 2);
 
   if (gainScore > 0.5) reasons.push(`涨幅 ${f.gainPct.toFixed(2)}% 落在 ${lo}-${hi}% 强势区间`);
+  if (f.open > 0 && f.prevClose > 0) {
+    const openGap = ((f.open - f.prevClose) / f.prevClose) * 100;
+    reasons.push(`开盘/竞价浮盈 ${openGap >= 0 ? "+" : ""}${openGap.toFixed(1)}%`);
+  }
   if (vrScore > 0.5) reasons.push(`量比 ${f.volumeRatio.toFixed(2)} 放量`);
   if (vwapScore > 0) reasons.push(`站上分时均线 +${f.priceVsVwapBps.toFixed(0)}bp`);
   if (turnoverScore > 0.3) reasons.push(`换手 ${f.turnoverPct.toFixed(2)}% 活跃`);

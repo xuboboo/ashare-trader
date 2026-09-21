@@ -26,17 +26,21 @@ describe("买入决策调度（盘前预选 + 全程节奏）", () => {
     expect(buyDecisionDue({ ...ran, nowMs: ran.lastBuyMs + 60_000 })).toBe(true);
   });
 
-  test("盘前 09:05-09:30 每日只预选一次", () => {
-    const pre = { ...base, minutes: 545 }; // 09:05
+  test("盘前预选：竞价定型后（09:25-09:30）每日只跑一次", () => {
+    const pre = { ...base, minutes: 566 }; // 09:26，竞价已定型
     expect(buyDecisionDue(pre)).toBe(true);
     expect(buyDecisionDue({ ...pre, preBuyDone: true })).toBe(false);
     expect(buyDecisionDue({ ...pre, minutes: 568, preBuyDone: true })).toBe(false); // 09:28 也不再跑
-    expect(buyDecisionDue({ ...base, minutes: 500, liveNow: false })).toBe(false); // 08:20 盘前无活价
+    expect(buyDecisionDue({ ...base, minutes: 545, liveNow: false })).toBe(false); // 09:05 竞价未定型，无活价
+  });
+
+  test("开盘稳定期：09:30-09:45 不出新买入单（09:38 那种开盘脉冲单不再出现）", () => {
+    expect(buyDecisionDue({ ...base, minutes: 571 })).toBe(false); // 09:31 稳定期内
+    expect(buyDecisionDue({ ...base, minutes: 584 })).toBe(false); // 09:44 仍在稳定期
+    expect(buyDecisionDue({ ...base, minutes: 586 })).toBe(true); // 09:46 起恢复按节奏决策
   });
 
   test("集合竞价/午休/收盘竞价不跑买入（价格不可靠）", () => {
-    // 09:30-10:00 虽叫退出窗口，但 phase 是 continuous → 照常按节奏决策
-    expect(buyDecisionDue({ ...base, minutes: 575 })).toBe(true);
     // 午休：liveNow=false
     expect(buyDecisionDue({ ...base, liveNow: false })).toBe(false);
   });

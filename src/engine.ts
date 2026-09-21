@@ -424,7 +424,7 @@ export class Engine {
         })
       ) {
         decision = await this.decide(clock, scored, gate, "buy");
-        const preMarket = clock.minutes >= config.session.premarketMin && clock.minutes < config.session.morningStart;
+        const preMarket = clock.minutes >= config.session.callAuctionEnd && clock.minutes < config.session.morningStart;
         if (trading && preMarket) this.preBuyDate = clock.date;
         else this.lastBuyMs = nowMs;
 
@@ -999,8 +999,11 @@ export function buyDecisionDue(a: {
   if (a.scoredCount <= 0) return false;
   if (a.force) return true;
   if (!a.trading) return false;
-  const preMarket = a.minutes >= config.session.premarketMin && a.minutes < config.session.morningStart;
+  // 盘前预选窗口：集合竞价 09:25 定型后到开盘前（此时开盘价已确定，竞价信息真实可得）
+  const preMarket = a.minutes >= config.session.callAuctionEnd && a.minutes < config.session.morningStart;
   if (preMarket) return !a.preBuyDone;
+  // 开盘稳定期：连续竞价开始后的前 OPEN_DELAY_MIN 分钟不开新仓（退出管理照常）
+  if (a.minutes < config.session.morningStart + config.openDelayMin) return false;
   return a.liveNow && a.usable && a.nowMs - a.lastBuyMs >= config.decideEveryMs;
 }
 
