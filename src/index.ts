@@ -2,6 +2,30 @@ import { config } from "./config";
 import { clockNow, Engine } from "./engine";
 import { sessionNow } from "./session";
 import { startServer } from "./server";
+import { join } from "node:path";
+
+// 单实例锁：两个引擎共写同一份账本会互相覆盖（真实发生过）。
+// 锁里记录持有者的 PID；持有者进程已死则自动接管。
+const lockFile = join(config.dataDir, ".engine.lock");
+try {
+  const prev = JSON.parse(await Bun.file(lockFile).text());
+  let alive = false;
+  try {
+    process.kill(prev.pid, 0);
+    alive = true; // 还活着（EPERM 也算活着，进不了这个分支）
+  } catch (e) {
+    alive = (e as Error).name === "EPERM";
+  }
+  if (alive) {
+    console.error(`!! 已有实例在运行（PID ${prev.pid}，启动于 ${new Date(prev.at).toLocaleString()}），拒绝双开。`);
+    console.error("   确认旧实例已停止后再启动，否则两份引擎会互踩账本。");
+    process.exit(1);
+  }
+  console.log(`[lock] 旧锁持有者 PID ${prev.pid} 已不存在，接管。`);
+} catch {
+  /* 无锁文件：首次运行 */
+}
+await Bun.write(lockFile, JSON.stringify({ pid: process.pid, at: Date.now() }));
 
 const engine = new Engine();
 await engine.init();

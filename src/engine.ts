@@ -408,10 +408,11 @@ export class Engine {
             if (!s) continue;
             const vetoReason = this.bias?.vetoes[s.features.code];
             const order = makeBuyOrder(s, clock, vetoReason, config.sizeCny, this.atrMap.get(s.features.code));
-            if (order) {
-              newOrders.push(order);
-              this.pending.set(order.signalId, order);
-            }
+            if (!order) continue;
+            // 现金闸：建议金额超过可用现金就不出单（与回测同口径），绝不把账本买穿成负数
+            if (order.amountCny + 50 > this.book.cash) continue;
+            newOrders.push(order);
+            this.pending.set(order.signalId, order);
           }
           if (newOrders.length) await this.persistPending();
         }

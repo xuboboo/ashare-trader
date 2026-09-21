@@ -105,6 +105,20 @@ export class Book {
     } catch {
       /* 还没有成交 */
     }
+    // 自愈校验：positions.json 若与流水重放不一致（多实例互踩/手改文件），
+    // 以流水为准重建 —— trades.jsonl 是唯一事实，快照只是缓存。
+    if (this.fills.length) {
+      const replay = new Book(this.initialCash);
+      replay.rebuild(this.fills, this.initialCash);
+      if (Math.abs(replay.cash - this.cash) > 1 || replay.positions.size !== this.positions.size) {
+        console.error(
+          `[book] 检测到账本不一致（cash ${this.cash} vs 重放 ${replay.cash}，持仓 ${this.positions.size} vs ${replay.positions.size}），已按流水重建`,
+        );
+        this.cash = replay.cash;
+        this.realizedTotal = replay.realizedTotal;
+        this.positions = replay.positions;
+      }
+    }
   }
 
   async save(): Promise<void> {
