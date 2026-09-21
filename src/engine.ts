@@ -414,15 +414,13 @@ export class Engine {
         for (const o of exits) this.pending.set(o.signalId, o);
         if (exits.length) await this.persistPending();
 
-        // ---- Jev 卖出辅助（每日一次）：对每个可卖仓位问
+        // ---- Jev 全程卖出决策：每个决策轮（40s）对每个可卖仓位问
         //      "立即离场 vs 按规则持有到明早10:00，哪个净收益更高"。
-        //      只能建议提前离场，永远不能推迟或取消止损/期限这些硬规则。----
+        //      硬底线不变：止损触发和 10:00 期限由规则无条件执行，Jev 不可推迟。----
         if (
           config.sellAssist &&
-          config.typesafeApiKey &&
-          this.sellAssistDate !== clock.date
+          config.typesafeApiKey
         ) {
-          this.sellAssistDate = clock.date;
           const sellableNow = [...this.book.positions.values()].filter((p) => {
             if (p.sellable <= 0) return false;
             const sn = this.snapshots.get(p.code);
