@@ -1,5 +1,9 @@
 # ashare-trader — A 股 T+1 决策台
 
+> **🌐 在线面板**：<https://xuboboo.github.io/ashare-trader/> —— 手机/电脑打开即见实时盘面。
+> 数据来自本机运行的后端（`bun run start`，端口 3005；https 页面访问 localhost 浏览器有安全豁免），
+> 远程查看可给后端开隧道并用 `?api=https://隧道地址` 指向。
+
 **A 股 T+1 决策台**：把 [Jev](https://ai-sdk.dev/providers/ai-sdk-providers/typesafe-ai)（TypeSafe 的 System One 模型）接进 A 股的选股决策，
 配上严格到难看的成本核算、日线 T+1 回测，以及"AI 说了不算、硬约束说了算"的执行层。
 它不自动下单 —— **交易时段全程决策**：09:05 盘前预选一次；09:30 起连续竞价时段每 `DECIDE_EVERY_MS`（默认 60s）做一轮买入决策；持仓退出（止损 / 高开减半 / 到点清仓）只要持仓可卖就每轮评估。组合级风控闸（日亏损 3% / 回撤 10%，可配）触及时自动停止开仓、不封退出。
