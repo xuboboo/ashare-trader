@@ -232,7 +232,9 @@ export class Engine {
       const phase = phaseOf(ymd, minutes, trading);
       const busy = trading && (canTrade(phase) || phase === "pre-open");
       const elapsed = performance.now() - t0;
-      await Bun.sleep(Math.max(200, (busy ? config.pollMs : 60_000) - elapsed));
+      // 阀门：交易时段全速（3s），午休/盘前/盘后 1 分钟心跳，非交易日 10 分钟心跳
+      const idle = trading ? 60_000 : 600_000;
+      await Bun.sleep(Math.max(200, (busy ? config.pollMs : idle) - elapsed));
     }
   }
 
