@@ -13,7 +13,7 @@ import { stopCounterfactual, summarizeStopCounterfactuals, type StopCounterfactu
 import { mkdir } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { TradingCalendar } from "./calendar";
-import { featuresFromSnapshot, gateLabel, ma5CloseBefore, marketGate, scoreStock, type Gate, type Scored } from "./factors";
+import { defaultFactorParams, featuresFromSnapshot, gateLabel, ma5CloseBefore, marketGate, scoreStock, type FactorParams, type Gate, type Scored } from "./factors";
 import { FactorModel, type Decision, type DailyBias, type Model, type SignalState, LlmAdvisory } from "./model";
 import { JevModel } from "./jev";
 import { LocalModel } from "./local";
@@ -372,10 +372,16 @@ export class Engine {
     this.lastIndex = { price: index.price, pct: index.pct, amountYi: index.amountYi, ma5: this.indexMa5 };
 
     // ---- 选股打分 ----
+    // 成交额门槛按开盘时长折算：早盘 8 分钟不要求全天累计 2 亿
+    const sessionElapsedMin = clock.minutes >= config.session.afternoonStart
+      ? clock.minutes - config.session.afternoonStart + 120 // 下午 = 上午 120 分钟 + 下午已过
+      : clock.minutes - config.session.morningStart;
+    const fp = defaultFactorParams();
+    if (sessionElapsedMin > 0) fp.minAmountYi = config.minAmountYi * Math.max(0.05, Math.min(1, sessionElapsedMin / 240));
     const scored: Scored[] = [];
     for (const sn of this.snapshots.values()) {
       if (!this.universe.entries.some((e) => e.code === sn.code)) continue;
-      scored.push(scoreStock(featuresFromSnapshot(sn, clock.date)));
+      scored.push(scoreStock(featuresFromSnapshot(sn, clock.date), {}, false, fp));
     }
     const rejected = scored.filter((s) => s.rejects.length > 0).length;
     const top = [...scored]
