@@ -56,6 +56,31 @@ export const LOCAL_FEATURES: {
     name: "index_x_gain",
     get: (c, m) => (m ? (m?.indexPct ?? 0) * Math.sign(c.features.gainPct) : 0),
   },
+  // ---- v3：K 线微观形态（实体比例 + 上下影线，两路径均可算）----
+  {
+    name: "bodyRatio",
+    get: (c) => {
+      const range = c.features.high - c.features.low;
+      if (range <= 0) return 0;
+      return (c.features.price - c.features.open) / range;
+    },
+  },
+  {
+    name: "upperShadowPct",
+    get: (c) => {
+      const body = Math.max(c.features.price, c.features.open);
+      const range = c.features.high - body;
+      return range > 0 ? (range / Math.max(c.features.prevClose, 0.01)) * 100 : 0;
+    },
+  },
+  {
+    name: "lowerShadowPct",
+    get: (c) => {
+      const body = Math.min(c.features.price, c.features.open);
+      const range = body - c.features.low;
+      return range > 0 ? (range / Math.max(c.features.prevClose, 0.01)) * 100 : 0;
+    },
+  },
 ];
 
 export interface LocalWeights {
