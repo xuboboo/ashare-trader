@@ -1,0 +1,40 @@
+# GitHub Pages：把仪表盘静态导出发布到 https://<owner>.github.io/ashare-trader/
+# 页面是纯客户端（SSE/REST），后端地址解析顺序见 web/src/lib/useFeed.ts 的 API_URL：
+#   ?api=... 运行时覆盖 > 构建期 NEXT_PUBLIC_API_URL > http://localhost:3005
+# 注意：数据来自运行本系统的机器上的后端；在自己电脑上打开才有实时数据
+#（https 页面访问 http://localhost 浏览器有安全豁免），远程查看需要给后端开隧道并用 ?api= 指向。
+name: pages
+on:
+  push:
+    branches: [main]
+permissions:
+  pages: write
+  id-token: write
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: build static export
+        working-directory: web
+        run: |
+          bun install --frozen-lockfile
+          NEXT_EXPORT=1 NEXT_PUBLIC_BASE_PATH=/ashare-trader bun run build
+      - uses: actions/configure-pages@v5
+        with:
+          enablement: true
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web/out
+      - id: deployment
+        uses: actions/deploy-pages@v4

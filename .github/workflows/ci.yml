@@ -8,9 +8,6 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: ashare-trader
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -20,7 +17,7 @@ jobs:
       - run: bun test
       - run: bunx tsc --noEmit
       - name: build web
-        working-directory: ashare-trader/web
+        working-directory: web
         run: |
           bun install --frozen-lockfile
           bun run build

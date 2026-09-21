@@ -13,9 +13,16 @@ import type {
   Totals,
 } from "./types";
 
-/** 后端地址：构建期/部署期配置（运营者设置，非终端用户输入），只允许 http/https。 */
+/**
+ * 后端地址解析顺序：
+ *   1. 页面查询参数 ?api=http://...（运行时覆盖，方便托管的页面临时指向任意后端/隧道）
+ *   2. 构建期 NEXT_PUBLIC_API_URL（部署配置，非终端用户输入）
+ *   3. 默认 http://localhost:3005
+ * 只允许 http/https，不符合时回退默认值。
+ */
 export const API_URL = (() => {
-  const raw = (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3005").replace(/\/+$/, "");
+  const fromQuery = typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("api") : null;
+  const raw = (fromQuery ?? process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3005").replace(/\/+$/, "");
   return /^https?:\/\//.test(raw) ? raw : "http://localhost:3005";
 })();
 
