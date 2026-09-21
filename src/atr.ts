@@ -7,8 +7,17 @@
  * 绝不因缺数据不设防。
  */
 import { join } from "node:path";
+import { stat } from "node:fs/promises";
 import { config } from "./config";
 import type { DailyBar } from "./quotes";
+
+const existsDir = async (p: string): Promise<boolean> => {
+  try {
+    return (await stat(p)).isDirectory();
+  } catch {
+    return false;
+  }
+};
 
 /** 最新 bar 距 today 不超过 3 个自然日才算新鲜（长周末正常，过期缓存不行）。 */
 function fresh(bars: DailyBar[], today: string): boolean {
@@ -21,6 +30,9 @@ function fresh(bars: DailyBar[], today: string): boolean {
 export async function loadAtrMap(today: string, n: number = config.atrN): Promise<Map<string, number>> {
   const dir = join(config.dataDir, "daily");
   const out = new Map<string, number>();
+  // 目录不存在 = 还没跑过 fetch-daily（新机器、或刚换了一个 DATA_DIR）。
+  // Bun.Glob.scan 对不存在的目录是抛 ENOENT 而不是给空集，不兜住会把引擎在 init 里直接打死。
+  if (!(await existsDir(dir))) return out; // 没跑过 fetch-daily：全量回退 fixed，不是崩溃
   const glob = new Bun.Glob("*.json");
   for await (const f of glob.scan({ cwd: dir })) {
     const code = f.replace(/\.json$/, "");

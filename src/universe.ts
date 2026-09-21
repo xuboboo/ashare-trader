@@ -64,13 +64,39 @@ export class Universe {
       await Bun.write(this.path(date), JSON.stringify({ date, refreshedAt: this.refreshedAt, entries: this.entries }));
     } catch (e) {
       this.lastError = (e as Error).message;
-      // 榜单拉不到时退回上一日的缓存，宁可股票池旧一点也不要空转
+      // 榜单拉不到时退回“最近一份落地的缓存”。旧实现读的是 this.path(date) —— 同一个刚失败
+      // 的路径，注释说“退回上一日”但实际取不到任何东西，结果就是空池空转。
       if (!this.entries.length) {
-        const prev = await Bun.file(this.path(date)).json().catch(() => null);
-        this.entries = Array.isArray(prev?.entries) ? prev.entries : [];
+        const prev = await this.loadNewestCached();
+        if (prev.length) {
+          this.entries = prev;
+          // 把今天标成“已处理过”：否则每个心跳都去重拉一次榜单，把限流额度白耗光
+          this.date = date;
+        }
       }
       console.error(`[universe] ${this.lastError}`);
     }
+  }
+
+  /** 按文件名里的日期（YYYY-MM-DD，字典序即时间序）找最近一份可用缓存。 */
+  private async loadNewestCached(): Promise<UniverseEntry[]> {
+    const dir = join(config.dataDir, "cache");
+    const files: string[] = [];
+    try {
+      for await (const f of new Bun.Glob("universe-*.json").scan({ cwd: dir })) files.push(f);
+    } catch {
+      return []; // 目录还不存在（首次运行）：Bun.Glob 抛 ENOENT 而不是给空集
+    }
+    files.sort();
+    for (const f of files.reverse()) {
+      const j = await Bun.file(join(dir, f)).json().catch(() => null);
+      if (Array.isArray(j?.entries) && j.entries.length) {
+        console.warn(`[universe] 今天的榜单拿不到，沿用 ${j.date ?? f} 的股票池（${j.entries.length} 支）——面板上股票池日期会跟着显示旧的`);
+        this.refreshedAt = j.refreshedAt ?? 0;
+        return j.entries as UniverseEntry[];
+      }
+    }
+    return [];
   }
 
   codes(): string[] {

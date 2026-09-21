@@ -2,18 +2,47 @@
  * Bun.serve：GET / 快照、GET /history、GET /positions、GET /fills、GET /events(SSE)，
  * 以及几个"人来操作"的写接口：POST /scan（立即选股）、POST /fill（回填真实成交）、
  * POST /fill/remove（撤销一笔误回填）、POST /reset（清空账本，需显式 confirm）。
- * 没有任何路径会向券商下真实委托。
+ *
+ * 引擎主循环不产生任何委托；但 POST /broker/order 确实会把单推给券商 sidecar
+ * （sidecar 处于 live 模式时就是真实委托方向），所以这条路径额外要：写权限 + signalId 幂等。
+ * 默认只绑 127.0.0.1；写接口在非回环/跨源请求下必须带 API_TOKEN（见 writeAllowed）。
  */
 import { config } from "./config";
 import { QmtBroker } from "./brokers/qmt";
 import type { Engine, TickEvent } from "./engine";
 
-const CORS = { "access-control-allow-origin": "*", "access-control-allow-headers": "*" };
+const CORS = { "access-control-allow-origin": "*", "access-control-allow-headers": "content-type, x-auth" };
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { ...CORS, "content-type": "application/json" } });
 
+/** 本机的面板/CLI 来源。跨源写请求一律要口令，不然任何一个网页都能 POST 本地 3005。 */
+const LOCAL_ORIGINS = new Set([
+  "http://localhost:3005",
+  "http://127.0.0.1:3005",
+  "http://localhost:3006",
+  "http://127.0.0.1:3006",
+]);
+
+/**
+ * 这笔写请求能不能做。三条路，对一条：
+ *  1) 带对了 API_TOKEN；
+ *  2) 来自回环且不是浏览器跨源（curl / 本机 CLI / 本机面板）；
+ *     注意“本机回环”不防浏览器 —— 用户开着任意一个网页，那个网页就能 POST localhost。
+ *  3) 其他（局域网/隧道）：没口令就是不行。
+ */
+export function writeAllowed(headers: Headers, loopback: boolean, token: string): boolean {
+  const given = headers.get("x-auth") ?? "";
+  if (token && given === token) return true;
+  if (!loopback) return false;
+  const origin = headers.get("origin");
+  if (origin && !LOCAL_ORIGINS.has(origin)) return false;
+  return !token; // 没设口令时：本机非跨源可写；设了口令则一律要带
+}
+
 export function startServer(engine: Engine) {
   const qmt = new QmtBroker();
+  /** 已推给过 sidecar 的建议单：幂等门。人工确认的间隔里双击/重试不能变成两张真实委托。 */
+  const submitted = new Set<string>();
   const clients = new Set<ReadableStreamDefaultController<Uint8Array>>();
   const enc = new TextEncoder();
   const send = (c: ReadableStreamDefaultController<Uint8Array>, type: string, data: unknown) => {
@@ -28,11 +57,18 @@ export function startServer(engine: Engine) {
   const meta = () => ({ ...engine.meta(), totals: engine.book.totals(), latest: engine.getHistory().at(-1) ?? null });
 
   const server = Bun.serve({
+    hostname: config.apiHost,
     port: config.port,
-    async fetch(req) {
+    async fetch(req, srv) {
       const url = new URL(req.url);
       const { pathname } = url;
       if (req.method === "OPTIONS") return new Response(null, { headers: CORS });
+      if (req.method !== "GET") {
+        const ip = srv.requestIP(req)?.address ?? "";
+        const loopback = ip === "127.0.0.1" || ip === "::1" || ip.startsWith("127.") || ip.startsWith("::ffff:127.");
+        if (!writeAllowed(req.headers, loopback, config.apiToken))
+          return json({ error: "写接口需要权限：本机以外的请求必须带 x-auth: <API_TOKEN>（非交易操作也一样）" }, 401);
+      }
       if (pathname === "/" && req.method === "GET") return json(meta());
       if (pathname === "/history" && req.method === "GET") return json(engine.getHistory());
       if (pathname === "/positions" && req.method === "GET")
@@ -42,11 +78,16 @@ export function startServer(engine: Engine) {
       if (pathname === "/broker" && req.method === "GET")
         return json({ sidecarUrl: config.qmtSidecarUrl, ...(await qmt.status()) });
       if (pathname === "/broker/order" && req.method === "POST") {
-        const body = ((await req.json().catch(() => null)) ?? {}) as { signalId?: string; confirm?: string };
+        const body = ((await req.json().catch(() => null)) ?? {}) as { signalId?: string; confirm?: string; force?: boolean };
         if (body.confirm !== "SUBMIT") return json({ error: '需要 body {"signalId":"...","confirm":"SUBMIT"}；这是真实委托方向的开关' }, 400);
         const o = engine.pendingOrders.find((x) => x.signalId === body.signalId);
         if (!o) return json({ error: `找不到在途建议单 ${body.signalId}` }, 404);
         if (o.side !== "buy" && o.side !== "sell") return json({ error: "订单方向异常" }, 400);
+        // 幂等：真实委托不能因为重试/双击而变两张。推失败了也不自动重发（上一笔可能已到柜台），
+        // 要重试必须人显式带 force:true —— 宁可多点一次，不能静默下两张。
+        if (submitted.has(o.signalId) && !body.force)
+          return json({ error: `${o.signalId} 本服务已推送过一次；确认柜台没有这张单后，带 force:true 才能重推` }, 409);
+        submitted.add(o.signalId);
         // 用最新快照价（钳在建议限价带内），避免人工确认的间隔里价格走远后拿旧参考价挂单
         const fresh = engine.latestSnapshot(o.code);
         const rawPrice = fresh && fresh.price > 0 ? fresh.price : o.priceRef;
@@ -66,6 +107,8 @@ export function startServer(engine: Engine) {
       // 权益曲线（每个交易日一个点，落盘在 positions.json）：面板的"一周盈亏"视图用
       if (pathname === "/equity" && req.method === "GET")
         return json({ points: engine.book.equityCurve, totals: engine.book.totals() });
+      // 止损口径的反事实对照（每平一笔仓一条）：用手上真实成交回答“ATR 比固定 3% 好吗”
+      if (pathname === "/stops" && req.method === "GET") return json(engine.stopComparison());
 
       if (pathname === "/scan" && req.method === "POST") {
         const e = await engine.round("force-scan");

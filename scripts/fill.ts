@@ -9,6 +9,7 @@
  * 服务在跑时走 HTTP（账本与仪表盘同步）；没在跑则直接改本地账本。
  */
 import { config } from "../src/config";
+import { acquireEngineLock, releaseEngineLock } from "../src/lock";
 import { Book, makeFill } from "../src/state";
 import type { Side } from "../src/symbols";
 import { clockNow } from "../src/engine";
@@ -84,6 +85,16 @@ async function main() {
     console.log(`服务没在跑（${msg}），直接写本地账本`);
   }
 
+  // 离线直写账本：必须先拿到单实例锁。上面“连不上服务”与“服务在跑但 fetch 失败”
+  // 是两回事，后者双写会互相覆盖账本。
+  try {
+    await acquireEngineLock("scripts/fill.ts (offline)");
+  } catch (e) {
+    console.error(`服务其实在跑，不能绕过它直写账本：${(e as Error).message}`);
+    console.error("请重试回填（走 HTTP），这样仪表盘与账本同步。");
+    process.exit(1);
+  }
+
   const book = new Book();
   await book.load();
   if (!price) {
@@ -123,6 +134,7 @@ async function main() {
   if (realized !== undefined) console.log(`本笔实现盈亏 ${realized} 元`);
   const t = book.totals();
   console.log(`账本: 权益 ${t.equity} 元，持仓 ${t.positions} 只，现金 ${t.cash} 元，可卖 ${[...book.positions.values()].reduce((s, p) => s + p.sellable, 0)} 股`);
+  await releaseEngineLock();
 }
 
 await main();

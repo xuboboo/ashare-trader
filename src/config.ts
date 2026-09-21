@@ -1,4 +1,12 @@
+import { isAbsolute, join } from "node:path";
+
 const env = (key: string, fallback?: string) => process.env[key] || fallback;
+/**
+ * 相对 DATA_DIR 一律相对仓库根解析，而不是相对 cwd。
+ * 否则从别的目录启动（比如从上级工作区跑）会静默写到另一个 data/，
+ * 而且 .env 也不会被加载 → 默认参数与真实参数两套账本。这是多写者事故的温床。
+ */
+const resolveDataDir = (p: string) => (isAbsolute(p) ? p : join(import.meta.dir, "..", p));
 const num = (key: string, fallback: number) => {
   const v = env(key);
   if (!v) return fallback;
@@ -90,8 +98,15 @@ export const config = {
   llmApiKey: env("LLM_API_KEY"),
   llmTimeoutMs: num("LLM_TIMEOUT_MS", 20_000),
   port: num("PORT", 3005),
+  /**
+   * 监听地址。默认只绑回环：面板有“清空账本”与“推给券商 sidecar”两个写接口，
+   * 绑 0.0.0.0 + 无鉴权 = 同一局域网里任何人都能清你的账本。要局域网/隧道访问请显式改。
+   */
+  apiHost: env("API_HOST", "127.0.0.1")!,
+  /** 写接口口令。为空时只允许本机且非浏览器跨源的写请求（见 server.ts writeAllowed）。 */
+  apiToken: env("API_TOKEN", "")!,
   historySize: 1000,
-  dataDir: env("DATA_DIR", "data")!,
+  dataDir: resolveDataDir(env("DATA_DIR", "data")!),
 
   /** 券商通道（QMT sidecar）。默认指向本机；sidecar 决定 mock/dry/live，本进程绝不自动下单。 */
   qmtSidecarUrl: env("QMT_SIDECAR_URL", "http://127.0.0.1:3011")!,

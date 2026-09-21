@@ -1,7 +1,16 @@
 node_modules
 .env
 .env.local
-data/
+# data/ 整体是本地账本与缓存，不能入库；但"结论证据"是例外 ——
+# 文档里引用的那张表（sweep / 回测输出 / 模型报告）必须能被别人复核，
+# 否则"36 组全不通过"只是一句自述。
+data/*
+!data/sweep.tsv
+!data/backtest.tsv
+!data/backtest.txt
+!data/backtest.json
+!data/model.json
+!data/notes.md
 test/tmp-*
 *.log
 web/.next
@@ -9,5 +18,6 @@ web/node_modules
 web/out
 .mimosa/
 brokers/qmt-sidecar/qmt_orders.jsonl
-cr.json\njobs.json
+cr.json
+jobs.json
 jobs2.json
