@@ -17,7 +17,7 @@ const state = (candidates: Scored[], over: Partial<SignalState> = {}): SignalSta
   date: "2026-09-21",
   time: "14:45",
   horizon: "尾盘买入、次日 10:00 前清仓",
-  gate: { allowed: true, reasons: ["ok"] },
+  gate: { allowed: true, reasons: ["ok"], status: "open" as const, skipped: [] },
   index: { price: 3900, pct: 0.5, amountYi: 9000, ma5: 3850 },
   candidates,
   heldCodes: [],

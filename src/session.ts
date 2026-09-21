@@ -68,6 +68,28 @@ export const canTrade = (p: Phase) =>
 /** 只有连续竞价才做止损/退出判定（竞价期间价格不可靠）。 */
 export const liveQuotes = (p: Phase) => p === "continuous";
 
+/** 全天连续竞价总时长（分钟）：上午 + 下午。成交节奏折算的分母。 */
+export const tradingMinutesTotal = () =>
+  S.morningEnd - S.morningStart + (S.afternoonEnd - S.afternoonStart);
+
+/**
+ * 某一刻累计交易了多少分钟 —— 用于把"当日累计成交额"折算成节奏阈值。
+ *
+ * 关键点：跨过午休**不清零**。成交额是全天累计值，下午 13:01 已经交易了 121 分钟
+ * （上午 120 + 下午 1），旧实现从 13:00 重新起算，导致午后阈值只有真实应达值的约一半，
+ * 而 13:00 整点那一分钟又反过来要求全天阈值。
+ *   盘前（含集合竞价）→ null：累计成交额还没有当日增量，按全天阈值处理（保守）；
+ *   午休 → 定格为上午全长；收盘后 → 封顶为全天时长。
+ */
+export function tradingElapsedMin(minutes: number): number | null {
+  const morning = S.morningEnd - S.morningStart;
+  if (minutes < S.morningStart) return null;
+  if (minutes <= S.morningEnd) return minutes - S.morningStart;
+  if (minutes < S.afternoonStart) return morning;
+  if (minutes <= S.afternoonEnd) return morning + (minutes - S.afternoonStart);
+  return tradingMinutesTotal();
+}
+
 export function sessionNow(d: Date = new Date(), tradingDay = true): Session {
   const { ymd, minutes } = bj(d);
   const phase = phaseOf(ymd, minutes, tradingDay);

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { bj, canTrade, liveQuotes, phaseOf } from "../src/session";
+import { bj, canTrade, liveQuotes, phaseOf, tradingElapsedMin, tradingMinutesTotal } from "../src/session";
 import { exchange, inScope, isSt, limitDown, limitUp, sharesForBudget, tencentSymbol } from "../src/symbols";
 
 const M = (h: number, m: number) => h * 60 + m;
@@ -44,6 +44,32 @@ describe("交易时段", () => {
     const b = bj(new Date("2026-09-17T16:30:00Z"));
     expect(b.ymd).toBe("2026-09-18");
     expect(b.minutes).toBe(M(0, 30));
+  });
+
+  /**
+   * 成交节奏折算用的分母：当日累计成交额是跨过午休继续增长的，所以已交易时长也不能清零。
+   * 旧实现下午从 13:00 重算，导致 13:00 那一分钟反而要求全天阈值，而整个午后阈值只有应达值一半。
+   */
+  test("累计交易分钟：上午连续、午休定格、下午接着长、收盘封顶", () => {
+    expect(tradingElapsedMin(M(9, 14))).toBeNull(); // 盘前：没有当日累计可言，用全天阈值
+    expect(tradingElapsedMin(M(9, 30))).toBe(0);
+    expect(tradingElapsedMin(M(10, 0))).toBe(30);
+    expect(tradingElapsedMin(M(11, 30))).toBe(120);
+    expect(tradingElapsedMin(M(12, 0))).toBe(120); // 午休：上午全长，不掉回 0
+    expect(tradingElapsedMin(M(13, 0))).toBe(120); // 13:00 与 11:30 同一个值：没有突刺
+    expect(tradingElapsedMin(M(13, 1))).toBe(121);
+    expect(tradingElapsedMin(M(14, 40))).toBe(220);
+    expect(tradingElapsedMin(M(14, 57))).toBe(tradingMinutesTotal()); // 全天封顶
+    expect(tradingElapsedMin(M(15, 30))).toBe(tradingMinutesTotal());
+  });
+
+  test("累计分钟单调不降（闸门阈值不可能中途突然变严）", () => {
+    let prev = -1;
+    for (let m = M(9, 30); m <= M(15, 0); m++) {
+      const e = tradingElapsedMin(m)!;
+      expect(e).toBeGreaterThanOrEqual(prev);
+      prev = e;
+    }
   });
 });
 

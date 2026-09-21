@@ -6,6 +6,7 @@
  * 只有情绪类 booster（行业涨停家数、主力净流入）在日线上不可得，默认关闭。
  */
 import { config } from "./config";
+import { tradingMinutesTotal } from "./session";
 import type { DailyBar, Snapshot } from "./quotes";
 import { limitDown as calcLimitDown, limitUp as calcLimitUp } from "./symbols";
 
@@ -139,40 +140,94 @@ export function scoreStock(
 export interface Gate {
   allowed: boolean;
   reasons: string[];
+  /**
+   * 这个结论有没有时效。闸门是"现在能不能买"的开关，它在盘外没有答案：
+   *   open / closed —— 当前窗口内有效；
+   *   idle —— 收盘后、非交易日或行情不新鲜，此时拿昨天（或盘前）的数据算出来的
+   *   结论只能当复盘材料读，不能显示成"闸门开"骗人。
+   * 可选是为了手造的用例（测试里的固定闸门）不必伪造这两个字段；
+   * 读方（gateLabel / 面板）把缺失当作“按 allowed 说”，不会误报待命。
+   */
+  status?: "open" | "closed" | "idle";
+  /** 本轮没能参与评估的否决项。静默跳过一个条件，比关掉系统更危险。 */
+  skipped?: string[];
 }
 
-/** 大盘闸门：指数在 5 日线上方 + 成交额够 + 情绪不差，否则强制空仓。 */
+/** 情绪冰点：全天应有的涨停家数下限（盘中按已交易时长折算，见下） */
+export const ZT_ICE_AGE = 20;
+
+/** 闸门的可读状态：日志、面板、CLI 共用这一套措词，不要各处自己拼三元表达式。 */
+export function gateLabel(g: Pick<Gate, "allowed" | "status"> & Partial<Gate>): string {
+  if (g.status === "idle") return "待命";
+  return g.allowed ? "开" : "关";
+}
+
 /**
  * 大盘闸门：指数在 5 日线上方 + 成交额节奏 + 情绪不差，否则强制空仓。
- * sessionElapsedMin：连续竞价已开盘的分钟数（上午从 09:30、下午从 13:00 起算）。
- * 盘中成交额是"累计值"，早盘天然低 —— 按开盘时长线性折算阈值（240 分钟 = 全天），
- * 检验的是成交"节奏"而不是绝对额；回测走日线全量口径，不传该参数即维持原行为。
+ *
+ * sessionElapsedMin：**累计**交易分钟数（跨过午休不清零，见 session.tradingElapsedMin）。
+ * 成交额与涨停家数都是"当日累计"量，早盘天然低 —— 阈值同步按已交易时长折算，
+ * 检验的是节奏而不是绝对额；不传该参数即维持全天阈值（日频/盘前口径）。
+ *
+ * ctx.live=false 时结论只标记为 idle（不影响 allowed，盘前预选照用上一交易日数据），
+ * 但面板与日志必须写“待命”而不是“开” —— 收盘后拿着全天成交额与昨日收盘位说“闸门开”，
+ * 是对下一个交易日的无意义背书。
  */
 export function marketGate(
   index: { price: number; amountYi: number },
   indexMa5: number | null,
   ztCount: number | null,
   sessionElapsedMin?: number | null,
+  ctx: { live?: boolean } = {},
 ): Gate {
   const reasons: string[] = [];
+  const skipped: string[] = [];
   let allowed = true;
-  if (indexMa5 && index.price < indexMa5) {
-    allowed = false;
-    reasons.push(`上证 ${index.price.toFixed(2)} 跌破 5 日线 ${indexMa5.toFixed(2)}`);
+  const total = tradingMinutesTotal();
+  // 0 分钟（09:30 整）是合法值而不是“没传”：那时当日累计几乎只有集合竞价成交额，
+  // 拿全天阈值去卡它就是把一个无意义的数当成否决。只有 null（盘前/日频口径）才用全天阈值。
+  const paceRatio = sessionElapsedMin == null ? 1 : Math.min(1, Math.max(0, sessionElapsedMin) / total);
+
+  if (indexMa5) {
+    if (index.price < indexMa5) {
+      allowed = false;
+      reasons.push(`上证 ${index.price.toFixed(2)} 跌破 5 日线 ${indexMa5.toFixed(2)}`);
+    }
+  } else {
+    skipped.push("5 日线缺失");
   }
-  const paceRatio = sessionElapsedMin && sessionElapsedMin > 0 ? Math.min(1, sessionElapsedMin / 240) : 1;
+
   const amountThreshold = config.indexMinAmountYi * paceRatio;
-  if (index.amountYi > 0 && index.amountYi < amountThreshold) {
-    allowed = false;
-    const scaled = sessionElapsedMin != null && paceRatio < 1 ? `（盘中 ${sessionElapsedMin} 分钟，阈值按节奏折算）` : "";
-    reasons.push(`上证成交额 ${index.amountYi.toFixed(0)} 亿 < ${amountThreshold.toFixed(0)} 亿${scaled}`);
+  if (index.amountYi > 0) {
+    if (index.amountYi < amountThreshold) {
+      allowed = false;
+      const scaled = sessionElapsedMin != null && paceRatio < 1 ? `（盘中 ${sessionElapsedMin} 分钟，阈值按节奏折算）` : "";
+      reasons.push(`上证成交额 ${index.amountYi.toFixed(0)} 亿 < ${amountThreshold.toFixed(0)} 亿${scaled}`);
+    }
+  } else {
+    skipped.push("指数成交额缺失");
   }
-  if (ztCount !== null && ztCount < 20) {
-    allowed = false;
-    reasons.push(`涨停仅 ${ztCount} 家，情绪冰点`);
+
+  /**
+   * 涨停家数同样是当日累计量（一天里只会单调增多），阈值必须跟着节奏走。
+   * 固定 20 家在 09:31 是几乎不可能达到的数 —— 那会把“今天能不能买”变成
+   * “每天开盘后一小时不准买”，一个永久假阳性。现在：09:31 只要不是 0 家（真冰点）就过，
+   * 尾盘 14:40 要求 19 家，跟原设计的盘中含义一致。
+   */
+  if (ztCount !== null) {
+    const ztThreshold = Math.max(1, Math.ceil(ZT_ICE_AGE * paceRatio));
+    if (ztCount < ztThreshold) {
+      allowed = false;
+      reasons.push(`涨停仅 ${ztCount} 家 < 此时应达 ${ztThreshold} 家，情绪冰点`);
+    }
+  } else {
+    skipped.push(`涨停家数未采集（本项否决未生效，当前应达 ${Math.max(1, Math.ceil(ZT_ICE_AGE * paceRatio))} 家）`);
   }
+
   if (allowed) reasons.push(`上证 ${index.price.toFixed(2)} (${index.amountYi.toFixed(0)} 亿) 闸门通过`);
-  return { allowed, reasons };
+  const status: Gate["status"] = ctx.live === false ? "idle" : allowed ? "open" : "closed";
+  if (status === "idle") reasons.push("非交易窗口（收盘/非交易日/行情不新鲜）：上面结论仅作复盘，不代表下一个交易日会开");
+  return { allowed, reasons, status, skipped };
 }
 
 export function featuresFromSnapshot(s: Snapshot, date: string): StockFeatures {
