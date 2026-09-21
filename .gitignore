@@ -10,3 +10,4 @@ web/out
 .mimosa/
 brokers/qmt-sidecar/qmt_orders.jsonl
 cr.json\njobs.json
+jobs2.json
