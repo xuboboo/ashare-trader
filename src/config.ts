@@ -8,7 +8,7 @@ const num = (key: string, fallback: number) => {
 const bool = (key: string, fallback = false) => (env(key) ? env(key) === "true" : fallback);
 /** "HH:MM" -> 当日分钟数 */
 export const hhmm = (s: string, fallback: number): number => {
-  const m = /^(\d{1,2}):(\d{2})$/.exec(s.trim());
+  const m = s.trim().match(/^(\d{1,2}):(\d{2})$/);
   return m ? Number(m[1]) * 60 + Number(m[2]) : fallback;
 };
 
