@@ -613,3 +613,12 @@ tr:hover td {
     width: 100%;
   }
 }
+
+/* 手机上标题与文字按钮不折行 */
+@media (max-width: 640px) {
+  .head h2,
+  .head .btn,
+  .acts .btn {
+    white-space: nowrap;
+  }
+}
