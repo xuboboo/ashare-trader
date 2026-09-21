@@ -448,7 +448,11 @@ export class Engine {
               };
             });
             const advices = await this.sellAdvisor.advise(inputs);
+            // 去重：硬规则本轮的 + 历史轮次 pending 中的，都不重复出
             const hasSellOrder = new Set(newOrders.filter((o) => o.side === "sell").map((o) => o.code));
+            for (const o of this.pending.values()) {
+              if (o.side === "sell") hasSellOrder.add(o.code);
+            }
             for (const a of advices) {
               if (!a.suggestExit || a.pExitBetter === null || !Number.isFinite(a.pExitBetter)) continue;
               if (hasSellOrder.has(a.code)) continue; // 本轮硬规则已为该仓位生成卖出单，不重复
