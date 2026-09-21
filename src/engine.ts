@@ -243,7 +243,16 @@ export class Engine {
   private async roundInner(clock: EngineClock, forceTrigger?: string): Promise<TickEvent> {
     const trading = this.calendar.isTradingDay(clock.date);
     const phase = phaseOf(clock.date, clock.minutes, trading);
-    this.book.rollover(clock.date);
+    // 日切：刷新交易日历与指数日线 —— 今天的日线盘后才生成，"今天是交易日"靠投射；
+    // 指数 MA5 的窗口也必须每天跟进，长跑才不会拿一周前的旧数据算闸门
+    if (this.book.rollover(clock.date)) {
+      void this.calendar.refresh();
+      try {
+        this.indexBars = await fetchIndexDaily(40);
+      } catch {
+        /* 保留旧日线，闸门退化处理 */
+      }
+    }
 
     // ---- 行情 ----
     const t0 = performance.now();
@@ -313,7 +322,12 @@ export class Engine {
         /* 闸门退化处理：没有 MA5 就不因它否决 */
       }
     }
-    const gate = marketGate({ price: index.price, amountYi: index.amountYi }, this.indexMa5, trading ? this.zt.count || null : null);
+    const gate = marketGate(
+      { price: index.price, amountYi: index.amountYi },
+      this.indexMa5,
+      trading ? this.zt.count || null : null,
+      phase === "continuous" ? (clock.minutes >= config.session.afternoonStart ? clock.minutes - config.session.afternoonStart : clock.minutes - config.session.morningStart) : null,
+    );
     this.lastIndex = { price: index.price, pct: index.pct, amountYi: index.amountYi, ma5: this.indexMa5 };
 
     // ---- 选股打分 ----

@@ -6,6 +6,22 @@
 import { fetchIndexDaily } from "./quotes";
 import { bj } from "./session";
 
+/** 周一~周五。 */
+export function isWeekday(ymd: string): boolean {
+  const day = new Date(`${ymd}T12:00:00Z`).getUTCDay();
+  return day >= 1 && day <= 5;
+}
+
+/**
+ * "今天晚于最后一个已知交易日"时的投射规则：周一~五视为交易日。
+ * 节假日会被误报为交易日 —— 无节假日表前提下这是最小的错误方向
+ * （错过交易日比在节假日空转更糟）。
+ */
+export function projectWeekdayTradingDay(ymd: string, lastKnown: string): boolean {
+  if (ymd <= lastKnown) return false;
+  return isWeekday(ymd);
+}
+
 export class TradingCalendar {
   private dates = new Set<string>();
   /** 升序日期数组，用于取“上一交易日” */
@@ -28,11 +44,14 @@ export class TradingCalendar {
     }
   }
 
-  /** 是否交易日。stale 时按工作日猜。 */
+  /** 是否交易日。stale 时按工作日猜；日历健康但日期晚于最后已知日线（比如"今天"，
+   *  日线要交易后才生成）时，按周一~五投射 —— 否则每个交易日都会被当成节假日。 */
   isTradingDay(ymd: string = bj().ymd): boolean {
-    if (!this.stale) return this.dates.has(ymd);
-    const day = new Date(`${ymd}T12:00:00Z`).getUTCDay();
-    return day >= 1 && day <= 5;
+    if (this.stale) return isWeekday(ymd);
+    if (this.dates.has(ymd)) return true;
+    const last = this.ordered[this.ordered.length - 1];
+    if (last && ymd > last) return projectWeekdayTradingDay(ymd, last);
+    return false; // 已知历史区间里的日期不在集合 = 真非交易日（节假日/周末）
   }
 
   /** ymd 之前的最后一个交易日（不含 ymd）。 */

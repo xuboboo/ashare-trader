@@ -142,16 +142,30 @@ export interface Gate {
 }
 
 /** 大盘闸门：指数在 5 日线上方 + 成交额够 + 情绪不差，否则强制空仓。 */
-export function marketGate(index: { price: number; amountYi: number }, indexMa5: number | null, ztCount: number | null): Gate {
+/**
+ * 大盘闸门：指数在 5 日线上方 + 成交额节奏 + 情绪不差，否则强制空仓。
+ * sessionElapsedMin：连续竞价已开盘的分钟数（上午从 09:30、下午从 13:00 起算）。
+ * 盘中成交额是"累计值"，早盘天然低 —— 按开盘时长线性折算阈值（240 分钟 = 全天），
+ * 检验的是成交"节奏"而不是绝对额；回测走日线全量口径，不传该参数即维持原行为。
+ */
+export function marketGate(
+  index: { price: number; amountYi: number },
+  indexMa5: number | null,
+  ztCount: number | null,
+  sessionElapsedMin?: number | null,
+): Gate {
   const reasons: string[] = [];
   let allowed = true;
   if (indexMa5 && index.price < indexMa5) {
     allowed = false;
     reasons.push(`上证 ${index.price.toFixed(2)} 跌破 5 日线 ${indexMa5.toFixed(2)}`);
   }
-  if (index.amountYi > 0 && index.amountYi < config.indexMinAmountYi) {
+  const paceRatio = sessionElapsedMin && sessionElapsedMin > 0 ? Math.min(1, sessionElapsedMin / 240) : 1;
+  const amountThreshold = config.indexMinAmountYi * paceRatio;
+  if (index.amountYi > 0 && index.amountYi < amountThreshold) {
     allowed = false;
-    reasons.push(`上证成交额 ${index.amountYi.toFixed(0)} 亿 < ${config.indexMinAmountYi} 亿`);
+    const scaled = sessionElapsedMin != null && paceRatio < 1 ? `（盘中 ${sessionElapsedMin} 分钟，阈值按节奏折算）` : "";
+    reasons.push(`上证成交额 ${index.amountYi.toFixed(0)} 亿 < ${amountThreshold.toFixed(0)} 亿${scaled}`);
   }
   if (ztCount !== null && ztCount < 20) {
     allowed = false;
