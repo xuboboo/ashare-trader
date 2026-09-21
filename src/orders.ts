@@ -4,6 +4,7 @@
  */
 import { config } from "./config";
 import { buyCosts, minCommissionWarn, sellCosts, slipFillPrice } from "./costs";
+import { stopLevel } from "./exit";
 import type { Scored } from "./factors";
 import type { Snapshot } from "./quotes";
 import { makeFill, round2, type Fill, type Position } from "./state";
@@ -34,6 +35,8 @@ export interface SuggestedOrder {
   warn: string | null;
   /** 为什么出这一单（通过项） */
   reason: string;
+  /** 反事实：STOP_MODE=atr 时记录"假如 fixed 3% 的止损价"，供影子盘对照审计 */
+  stopFixedAlt?: number | null;
   /** 为什么不出单（否决项），仅诊断用 */
   rejectReason: string | null;
   score: number;
@@ -58,8 +61,16 @@ const nextId = (date: string) => `S${date.replace(/-/g, "")}-${(++seq).toString(
 /** 新建建议单时，只看得到创建那一刻的现价；之后的极值由 updateResting 累加。 */
 const resting = (price: number) => ({ seenLow: price, seenHigh: price, restingSince: Date.now() });
 
-/** 尾盘/盘中开仓建议单。不可买（买不起一手 / 全否决）时返回 null。sizeCny 可注入（测试用）。 */
-export function makeBuyOrder(scored: Scored, clock: Clock, vetoReason?: string, sizeCny: number = config.sizeCny): SuggestedOrder | null {
+/** 尾盘/盘中开仓建议单。不可买（买不起一手 / 全否决）时返回 null。
+ *  sizeCny / atr 可注入（测试用）：STOP_MODE=atr 且提供 atr 时，
+ *  止损 = 买入价 − ATR_K×ATR（封底买入价×90%），并记录 fixed 止损作反事实。 */
+export function makeBuyOrder(
+  scored: Scored,
+  clock: Clock,
+  vetoReason?: string,
+  sizeCny: number = config.sizeCny,
+  atr?: number | null,
+): SuggestedOrder | null {
   const f = scored.features;
   const rejects = vetoReason ? [...scored.rejects, vetoReason] : scored.rejects;
   if (rejects.length) return null;
@@ -68,6 +79,9 @@ export function makeBuyOrder(scored: Scored, clock: Clock, vetoReason?: string, 
     return null; // 一手都买不起，直接不出单
   }
   const priceRef = f.price;
+  const useAtr = config.stopMode === "atr";
+  const stop = stopLevel(priceRef, { mode: useAtr ? "atr" : "fixed", atr, k: config.atrK });
+  const stopFixedAlt = useAtr ? stopLevel(priceRef, { mode: "fixed" }) : null;
   const amountCny = round2(priceRef * qty);
   const costCny = round2(buyCosts(amountCny).total + sellCosts(amountCny).total);
   return {
@@ -81,7 +95,8 @@ export function makeBuyOrder(scored: Scored, clock: Clock, vetoReason?: string, 
     priceRef,
     limitLow: round2(Math.max(tickPrice(priceRef, -2), priceRef * 0.995)),
     limitHigh: round2(Math.min(tickPrice(priceRef, 2), f.limitUp)),
-    stopPrice: round2(priceRef * (1 - config.stopLossPct / 100)),
+    stopPrice: stop,
+    stopFixedAlt,
     mustExitAt: "次日 " + hhmm(config.forceExitMin),
     amountCny,
     costCny,

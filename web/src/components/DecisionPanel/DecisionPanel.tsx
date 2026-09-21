@@ -59,6 +59,7 @@ export default function DecisionPanel({ event, history, latest, meta, nowMs }: P
   const exitAt = meta?.forceExitAt ?? "10:00";
   const bankroll = meta?.bankrollCny !== undefined ? `${(meta.bankrollCny / 10000).toFixed(0)} 万` : "1 万";
   const size = meta?.sizeCny !== undefined ? `${Math.round(meta.sizeCny).toLocaleString()}` : "3,300";
+  const stop = meta?.stopLabel ?? "3%";
 
   const recent = history.slice(-8).reverse();
   return (
@@ -73,7 +74,7 @@ export default function DecisionPanel({ event, history, latest, meta, nowMs }: P
 
       <div className="decisionLabel">常设命令 · STANDING ORDER</div>
       <div className="decisionOrder">
-        {`> 盘前预选一次，开盘后全程决策。概率 ≥ ${minProb} 才买，T+1：次日 ${exitAt} 前无条件清仓。本金 ¥${bankroll} · 单笔 ¥${size} · 止损 3%。`}
+        {`> 盘前预选一次，开盘后全程决策。概率 ≥ ${minProb} 才买，T+1：次日 ${exitAt} 前无条件清仓。本金 ¥${bankroll} · 单笔 ¥${size} · 止损 ${stop}。`}
       </div>
 
       <div className="decisionLabel" style={{ marginTop: 14 }}>

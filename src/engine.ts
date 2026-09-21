@@ -8,6 +8,7 @@
  * 其余时段只做行情心跳、影子撮合与净值标记。
  */
 import { config } from "./config";
+import { loadAtrMap } from "./atr";
 import { mkdir } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { TradingCalendar } from "./calendar";
@@ -104,6 +105,8 @@ export class Engine {
   private lastBuyMs = 0;
   /** 上一次 eodOnly 恢复探测时刻 */
   private lastEodProbeMs = 0;
+  /** 个股 ATR₁₄（STOP_MODE=atr 用），init 与每日日切时各加载一次 */
+  private atrMap: Map<string, number> = new Map();
   /** 最近一次风控闸判定（挂到事件上，面板可见） */
   private lastRisk: RiskBrake | null = null;
   private opts: EngineOpts;
@@ -160,6 +163,7 @@ export class Engine {
     const today = bj().ymd;
     this.book.rollover(today);
     await this.loadPending(today);
+    if (config.stopMode === "atr") this.atrMap = await loadAtrMap(today);
     await this.universe.get(today);
     try {
       this.indexBars = await fetchIndexDaily(40); // 上证指数日线，算闸门用的 MA5
@@ -247,6 +251,13 @@ export class Engine {
     // 指数 MA5 的窗口也必须每天跟进，长跑才不会拿一周前的旧数据算闸门
     if (this.book.rollover(clock.date)) {
       void this.calendar.refresh();
+      if (config.stopMode === "atr") {
+        try {
+          this.atrMap = await loadAtrMap(clock.date);
+        } catch {
+          /* ATR 表沿用旧的；个股缺失时 makeBuyOrder 自动回退 fixed */
+        }
+      }
       try {
         this.indexBars = await fetchIndexDaily(40);
       } catch {
@@ -396,7 +407,7 @@ export class Engine {
             const s = scored.find((x) => x.features.code === pick.code);
             if (!s) continue;
             const vetoReason = this.bias?.vetoes[s.features.code];
-            const order = makeBuyOrder(s, clock, vetoReason);
+            const order = makeBuyOrder(s, clock, vetoReason, config.sizeCny, this.atrMap.get(s.features.code));
             if (order) {
               newOrders.push(order);
               this.pending.set(order.signalId, order);
@@ -704,6 +715,10 @@ export class Engine {
       sizeCny: config.sizeCny,
       minProb: config.jevMinProb,
       forceExitAt: hhmmOf(config.forceExitMin),
+      stopLabel:
+        config.stopMode === "atr"
+          ? `ATR×${config.atrK}（封底 10%）`
+          : `${config.stopLossPct}%`,
     };
   }
 

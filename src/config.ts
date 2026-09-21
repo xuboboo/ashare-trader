@@ -37,6 +37,11 @@ export const config = {
   k: num("K", 3),
   maxDailyOpens: num("MAX_DAILY_OPENS", 4),
   stopLossPct: num("STOP_LOSS_PCT", 3),
+  /** 止损模式：fixed = 固定百分比；atr = 买入价 − ATR_K×ATR₁₄（封底买入价×90%）。
+   *  ATR 缺失/过期的股票自动回退 fixed。回测门槛通过后才建议切 atr。 */
+  stopMode: env("STOP_MODE", "fixed") as "fixed" | "atr",
+  atrK: num("ATR_K", 2.5),
+  atrN: num("ATR_N", 14),
   /** 日亏损闸：当日亏损（相对日初权益）达到此百分比停止开仓，次日自动恢复；0 = 关闭 */
   maxDayLossPct: num("MAX_DAY_LOSS_PCT", 3),
   /** 回撤闸：权益自峰值回撤达到此百分比停止开仓，创新高后自动恢复；0 = 关闭 */

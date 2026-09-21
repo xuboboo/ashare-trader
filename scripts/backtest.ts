@@ -17,7 +17,7 @@
  */
 import { join } from "node:path";
 import { config } from "../src/config";
-import { nextDayExit } from "../src/exit";
+import { nextDayExit, stopLevel } from "../src/exit";
 import { featuresFromDaily, marketGate, scoreStock, type FactorParams, type Scored } from "../src/factors";
 import { fetchIndexDaily, type DailyBar } from "../src/quotes";
 import { Book, makeFill, round2 } from "../src/state";
@@ -109,6 +109,10 @@ export interface SimInput {
   /** 显式传参；默认取 config.bankrollCny。回测结果必须与 .env 无关才可复现、可对比 */
   bankrollCny?: number;
   sizeCny?: number;
+  /** 止损模式：fixed = 固定百分比（默认）；atr = 买入价 − k×ATR₁₄（封底 entry×90%） */
+  stopMode?: "fixed" | "atr";
+  atrK?: number;
+  atrN?: number;
   gainMin?: number;
   gainMax?: number;
   vrMin?: number;
@@ -162,6 +166,10 @@ export function simulate(input: SimInput): { result: BtResult; log: string[] } {
   const stockByCode = new Map(stocks.map((s) => [s.code, s]));
   const idxOf = new Map<string, Map<string, number>>();
   const vol5 = new Map<string, (number | undefined)[]>();
+  // ATR₁₄（简单均值版）：stopMode=atr 时决定止损距离；不足 14 根为 undefined → 回退 fixed
+  const atrK = input.atrK ?? 2.5;
+  const atrN = input.atrN ?? 14;
+  const atr14 = new Map<string, (number | undefined)[]>();
   const indexIdx = new Map(indexBars.map((b, i) => [b.date, i]));
   for (const s of stocks) {
     const m = new Map<string, number>();
@@ -174,6 +182,20 @@ export function simulate(input: SimInput): { result: BtResult; log: string[] } {
         let sum = 0;
         for (let j = i - 5; j < i; j++) sum += s.bars[j]!.volumeHands;
         return sum / 5;
+      }),
+    );
+    const tr = s.bars.map((b, i) => {
+      if (i === 0) return b.high - b.low;
+      const pc = s.bars[i - 1]!.close;
+      return Math.max(b.high - b.low, Math.abs(b.high - pc), Math.abs(b.low - pc));
+    });
+    atr14.set(
+      s.code,
+      s.bars.map((_, i) => {
+        if (i < atrN) return undefined;
+        let sum = 0;
+        for (let j = i - atrN + 1; j <= i; j++) sum += tr[j]!;
+        return sum / atrN;
       }),
     );
   }
@@ -287,6 +309,12 @@ export function simulate(input: SimInput): { result: BtResult; log: string[] } {
           skippedAtLimit++;
           continue;
         }
+        const atr = input.stopMode === "atr" ? atr14.get(code)?.[idxOf.get(code)?.get(date) ?? -1] : undefined;
+        const stop = stopLevel(entryPrice, {
+          mode: input.stopMode === "atr" ? "atr" : "fixed",
+          atr,
+          k: atrK,
+        });
         const qty = Math.floor(a.sizeCny / entryPrice / 100) * 100;
         if (qty < 100) continue;
         const amount = round2(entryPrice * qty);
@@ -304,7 +332,7 @@ export function simulate(input: SimInput): { result: BtResult; log: string[] } {
         });
         book.applyFill(fill);
         costYuan += fill.costs.total;
-        openPositions.set(code, { qty, entry: entryPrice, entryDate: date, stop: round2(entryPrice * (1 - config.stopLossPct / 100)) });
+        openPositions.set(code, { qty, entry: entryPrice, entryDate: date, stop });
         heldUntil.set(code, date);
       }
     }

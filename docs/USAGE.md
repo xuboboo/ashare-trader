@@ -129,6 +129,8 @@ bun run start
 | `K` | 3 | 同时最多持有几只 |
 | `MAX_DAILY_OPENS` | 4 | 每日最多开仓次数 |
 | `STOP_LOSS_PCT` | 3 | 止损百分比 |
+| `STOP_MODE` | fixed | fixed = 固定百分比；atr = 买入价 − ATR_K×ATR₁₄（封底买入价×90%），ATR 缺失自动回退 fixed |
+| `ATR_K` / `ATR_N` | 2.5 / 14 | atr 模式的止损倍数与回看窗口；回测对比 `bun run scripts/atr-sweep.ts` |
 | `GAP_TRIM_PCT` | 3 | 次日高开超过该值先卖一半 |
 | `FORCE_EXIT_AT` | 10:00 | 次日无条件清仓时刻 |
 | `MAX_DAY_LOSS_PCT` | 3 | 当日亏损（相对日初权益）达到此值停止开仓，次日自动恢复；0 关闭 |

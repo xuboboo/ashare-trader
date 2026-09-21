@@ -7,6 +7,23 @@
 import { config } from "./config";
 import { round2 } from "./symbols";
 
+/**
+ * 止损价：atr 模式 = entry − k×ATR（封底 entry×(1−10%)，防高波动票单笔风险失控）；
+ * fixed 模式或 ATR 缺失 = entry×(1−fixedPct%)。回测与实盘共用，口径不许分叉。
+ */
+export function stopLevel(
+  entry: number,
+  opts: { mode?: "fixed" | "atr"; atr?: number | null; k?: number; fixedPct?: number },
+): number {
+  const fixedPct = opts.fixedPct ?? config.stopLossPct;
+  if (opts.mode === "atr" && opts.atr && opts.atr > 0) {
+    const k = opts.k ?? 2.5;
+    const floor = entry * (1 - 0.10);
+    return Math.max(round2(entry - k * opts.atr), round2(floor));
+  }
+  return round2(entry * (1 - fixedPct / 100));
+}
+
 export interface ExitLeg {
   qty: number;
   price: number;

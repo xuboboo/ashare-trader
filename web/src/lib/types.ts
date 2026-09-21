@@ -51,6 +51,8 @@ export interface SuggestedOrder {
   limitLow: number;
   limitHigh: number;
   stopPrice: number | null;
+  /** STOP_MODE=atr 时记录的"假如 fixed 3%"反事实止损价 */
+  stopFixedAlt?: number | null;
   mustExitAt: string | null;
   amountCny: number;
   costCny: number;
@@ -172,6 +174,7 @@ export interface Meta {
   sizeCny?: number;
   minProb?: number;
   forceExitAt?: string;
+  stopLabel?: string;
 }
 
 /** /equity 的权益曲线点（每个交易日一个） */
