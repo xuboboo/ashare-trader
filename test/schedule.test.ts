@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { config } from "../src/config";
 import { buyDecisionDue } from "../src/engine";
 
 /**
@@ -19,12 +20,13 @@ const base = {
 };
 
 describe("买入决策调度（盘前预选 + 全程节奏）", () => {
-  test("连续竞价：首次必跑，之后按 DECIDE_EVERY_MS 节奏", () => {
+  test("连续竞价：首次必跑，之后按 DECIDE_EVERY_MS 节奏（随环境可变）", () => {
     expect(buyDecisionDue(base)).toBe(true); // lastBuyMs=0 → 从未跑过
     const ran = { ...base, lastBuyMs: 1_000_000 };
     expect(buyDecisionDue(ran)).toBe(false); // 刚跑过
-    expect(buyDecisionDue({ ...ran, nowMs: ran.lastBuyMs + 59_999 })).toBe(false);
-    expect(buyDecisionDue({ ...ran, nowMs: ran.lastBuyMs + 60_000 })).toBe(true);
+    const cad = config.decideEveryMs;
+    expect(buyDecisionDue({ ...ran, nowMs: ran.lastBuyMs + cad - 1 })).toBe(false);
+    expect(buyDecisionDue({ ...ran, nowMs: ran.lastBuyMs + cad })).toBe(true);
   });
 
   test("盘前预选：竞价定型后（09:25-09:30）每日只跑一次", () => {
