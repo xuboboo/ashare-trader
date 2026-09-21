@@ -112,6 +112,8 @@ export class Engine {
   /** Jev 卖出辅助：上次评估的交易日（每日一次） */
   private sellAssistDate = "";
   private sellAdvisor = new SellAdvisor();
+  /** Jev 10:00 延长评估：上次评估的交易日 */
+  private extEvalDate = "";
   /** 上一次 eodOnly 恢复探测时刻 */
   private lastEodProbeMs = 0;
   /** 个股 ATR₁₄（STOP_MODE=atr 用），init 与每日日切时各加载一次 */
@@ -415,8 +417,50 @@ export class Engine {
 
       const hasSellable = [...this.book.positions.values()].some((p) => p.sellable > 0);
       if (trading && liveQuotes(phase) && usable && hasSellable) {
-        // 退出单也必须进 pending：影子撮合不覆盖卖出腿的话，账本只进不出，
-        // 整套退出阶梯（止损 / 高开减半 / 到点清仓）在影子路径上从未被执行，也就从未被验证。
+        // ---- Jev 10:00 延长评估：让 Jev 逐仓判断延长还是离场 ----
+        if (clock.minutes >= config.forceExitMin && config.typesafeApiKey && this.extEvalDate !== clock.date) {
+          this.extEvalDate = clock.date;
+          const remaining = [...this.book.positions.values()].filter((p) => {
+            if (p.sellable <= 0) return false;
+            const sn = this.snapshots.get(p.code);
+            return sn && sn.price > 0;
+          });
+          if (remaining.length) {
+            const inputs: SellAssistInput[] = remaining.map((p) => {
+              const sn = this.snapshots.get(p.code)!;
+              return {
+                code: p.code,
+                name: p.name,
+                entry: p.avgPrice,
+                price: sn.price,
+                unrealizedPct: ((sn.price - p.avgPrice) / p.avgPrice) * 100,
+                stop: p.stopPrice,
+                heldDays: Math.max(1, Math.round((Date.parse(`${clock.date}T12:00:00Z`) - Date.parse(`${p.openDate}T12:00:00Z`)) / 86_400_000)),
+              };
+            });
+            const advices = await this.sellAdvisor.advise(inputs);
+            for (const a of advices) {
+              if (a.pExitBetter === null || !Number.isFinite(a.pExitBetter)) continue;
+              const pos = this.book.positions.get(a.code);
+              const sn = this.snapshots.get(a.code);
+              if (!pos || !sn) continue;
+              if (a.suggestExit) {
+                // Jev 决定离场：生成退出单
+                const o = makeExitOrder(pos, sn, clock, `Jev 卖出决策（p=${(a.pExitBetter * 100).toFixed(0)}%）：确认弱势提前离场`, pos.sellable);
+                if (o) {
+                  newOrders.push(o);
+                  this.pending.set(o.signalId, o);
+                }
+              } else {
+                // Jev 决定延长：放宽止损至成本 ×95%，新期限 14:50
+                pos.stopPrice = Math.max(pos.stopPrice, round2(pos.avgPrice * 0.95));
+                pos.extensionUntil = "14:50";
+              }
+            }
+          }
+        }
+
+        // ---- 硬规则退出阶梯（止损 / 高开减半 / 到点清仓 / VWAP）----
         const exits = this.exitOrders(clock);
         newOrders.push(...exits);
         for (const o of exits) this.pending.set(o.signalId, o);
