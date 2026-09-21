@@ -80,7 +80,7 @@ export default function DecisionPanel({ event, history, latest, meta, nowMs }: P
       <div className="decisionOrder">
         {`> 盘前预选一次；开仓窗口 ${window}，全程按节奏决策。${entryRule}。
 > 普通 A 股 T+1；策略最迟次日 ${exitAt} 清仓。本金 ¥${bankroll} · 单笔上限 ¥${size} · 最多 ${maxPos} 仓 · ${stop}。
-> 卖出只执行硬规则，模型不得干预。`}
+> 卖出只执行硬规则（止损/期限铁律），模型不得干预；Jev 仅可建议提前离场（实验）。`}
       </div>
 
       <div className="decisionLabel" style={{ marginTop: 14 }}>

@@ -17,6 +17,7 @@ import { featuresFromSnapshot, gateLabel, ma5CloseBefore, marketGate, scoreStock
 import { FactorModel, type Decision, type DailyBias, type Model, type SignalState, LlmAdvisory } from "./model";
 import { JevModel } from "./jev";
 import { LocalModel } from "./local";
+import { SellAdvisor, type SellAssistInput } from "./sell-assist";
 import { makeBuyOrder, makeExitOrder, restingKey, restingKeys, settlePending, type Clock, type SuggestedOrder } from "./orders";
 import { fetchIndexDaily, fetchIndex, fetchZtPool, fetchSnapshots, quoteAgeSec, type DailyBar, type Snapshot } from "./quotes";
 import { riskBrake, type RiskBrake } from "./risk";
@@ -108,6 +109,9 @@ export class Engine {
   private lastBuyMs = 0;
   /** 上一轮的可买候选代码集（事件触发的比较基准） */
   private lastEligibleKey = "";
+  /** Jev 卖出辅助：上次评估的交易日（每日一次） */
+  private sellAssistDate = "";
+  private sellAdvisor = new SellAdvisor();
   /** 上一次 eodOnly 恢复探测时刻 */
   private lastEodProbeMs = 0;
   /** 个股 ATR₁₄（STOP_MODE=atr 用），init 与每日日切时各加载一次 */
@@ -409,6 +413,50 @@ export class Engine {
         newOrders.push(...exits);
         for (const o of exits) this.pending.set(o.signalId, o);
         if (exits.length) await this.persistPending();
+
+        // ---- Jev 卖出辅助（每日一次）：对每个可卖仓位问
+        //      "立即离场 vs 按规则持有到明早10:00，哪个净收益更高"。
+        //      只能建议提前离场，永远不能推迟或取消止损/期限这些硬规则。----
+        if (
+          config.sellAssist &&
+          config.typesafeApiKey &&
+          this.sellAssistDate !== clock.date
+        ) {
+          this.sellAssistDate = clock.date;
+          const sellableNow = [...this.book.positions.values()].filter((p) => {
+            if (p.sellable <= 0) return false;
+            const sn = this.snapshots.get(p.code);
+            return sn && sn.price > 0;
+          });
+          if (sellableNow.length) {
+            const inputs: SellAssistInput[] = sellableNow.map((p) => {
+              const sn = this.snapshots.get(p.code)!;
+              return {
+                code: p.code,
+                name: p.name,
+                entry: p.avgPrice,
+                price: sn.price,
+                unrealizedPct: ((sn.price - p.avgPrice) / p.avgPrice) * 100,
+                stop: p.stopPrice,
+                heldDays: Math.max(1, Math.round((Date.parse(`${clock.date}T12:00:00Z`) - Date.parse(`${p.openDate}T12:00:00Z`)) / 86_400_000)),
+              };
+            });
+            const advices = await this.sellAdvisor.advise(inputs);
+            const hasSellOrder = new Set(newOrders.filter((o) => o.side === "sell").map((o) => o.code));
+            for (const a of advices) {
+              if (!a.suggestExit || a.pExitBetter === null || !Number.isFinite(a.pExitBetter)) continue;
+              if (hasSellOrder.has(a.code)) continue; // 本轮硬规则已为该仓位生成卖出单，不重复
+              const pos = this.book.positions.get(a.code);
+              const sn = this.snapshots.get(a.code);
+              if (!pos || !sn) continue;
+              const o = makeExitOrder(pos, sn, clock, `Jev 卖出辅助（p=${(a.pExitBetter * 100).toFixed(0)}%）：确认弱势提前离场`, pos.sellable);
+              if (o) {
+                newOrders.push(o);
+                this.pending.set(o.signalId, o);
+              }
+            }
+          }
+        }
       }
 
       const nowMs = Date.now();
