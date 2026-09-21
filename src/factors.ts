@@ -72,6 +72,8 @@ export interface FactorParams {
   volumeRatioMin: number;
   minAmountYi: number;
   minMcapYi: number;
+  /** 开盘以来经过的分钟数（连续竞价），用于按节奏折算成交额门槛；不传 = 用全天阈值 */
+  sessionElapsedMin?: number;
 }
 
 export const defaultFactorParams = (): FactorParams => ({
@@ -98,8 +100,12 @@ export function scoreStock(
   if (f.price >= f.limitUp) rejects.push("已封涨停");
   if (f.gainPct < p.gainMinPct) rejects.push(`涨幅 ${f.gainPct.toFixed(2)}% 低于 ${p.gainMinPct}%`);
   if (f.gainPct > p.gainMaxPct) rejects.push(`涨幅 ${f.gainPct.toFixed(2)}% 超 ${p.gainMaxPct}%（追高）`);
-  if (f.amountYuan < p.minAmountYi * 1e8)
-    rejects.push(`成交额 ${(f.amountYuan / 1e8).toFixed(2)} 亿 < ${p.minAmountYi} 亿`);
+  // 成交额门槛按开盘时长折算（240 分钟 = 全天基准），早盘不因累计量不够而误杀
+  const amountThreshold = p.sessionElapsedMin != null && p.sessionElapsedMin > 0
+    ? Math.max(p.minAmountYi * 1e8 * Math.min(1, p.sessionElapsedMin / 240), 2_000_000) // 最低 200 万
+    : p.minAmountYi * 1e8;
+  if (f.amountYuan < amountThreshold)
+    rejects.push(`成交额 ${(f.amountYuan / 1e8).toFixed(2)} 亿 < ${p.minAmountYi} 亿（盘中按节奏折算）`);
   if (f.mcapYi > 0 && f.mcapYi < p.minMcapYi) rejects.push(`总市值 ${f.mcapYi.toFixed(0)} 亿 < ${p.minMcapYi} 亿`);
   if (f.volumeRatio < p.volumeRatioMin) rejects.push(`量比 ${f.volumeRatio.toFixed(2)} < ${p.volumeRatioMin}`);
   if (f.priceVsVwapBps < 0) rejects.push(`跌破分时均线 ${f.priceVsVwapBps.toFixed(0)}bp`);
