@@ -7,6 +7,11 @@ import { mkSnap } from "./helpers";
 /**
  * 回测与实盘一致性：同一天的数据，日线口径与快照口径必须给出同样的分数、同样的否决、
  * 同样的选股结果。否则回测结论不能外推到实盘。
+ *
+ * 注意这份测试的边界：它证的是“打分函数只有一份”，不是“两条路的输入同义”。
+ * 后者做不到 —— 快照里的 gainPct/成交额/量比是“截至目前”，日线是全天。下面
+ * “同一只票在 10:00 与收盘不是同一个输入”那组用例就是把这层差异量化出来，
+ * 免得有人拿上面的相等断言当“尾盘回测 = 盘中实盘”的护身符。
  */
 const avg5 = 166_666.666_666_666_66;
 const bar: DailyBar = {
@@ -68,7 +73,7 @@ describe("回测/实盘同一口径", () => {
       date: bar.date,
       time: "14:45",
       horizon: "尾盘买入",
-      gate: { allowed: true, reasons: [] },
+      gate: { allowed: true, reasons: [], status: "open" as const, skipped: [] },
       index: { price: 3900, pct: 0.5, amountYi: 9000, ma5: null },
       heldCodes: [],
       allowed: { buy: true, sell: false },
@@ -86,5 +91,24 @@ describe("回测/实盘同一口径", () => {
     expect(avgVolumeBefore([bar, prevBar], "2026-09-18", 5)).toBeUndefined();
     const many = Array.from({ length: 6 }, (_, i) => ({ ...bar, date: `2026-09-0${i + 1}` }));
     expect(avgVolumeBefore(many, "2026-09-18", 5)).toBeCloseTo(bar.volumeHands, 6);
+  });
+
+  /**
+   * 口径层的差异（不是 bug，是事实）：10:00 的快照与同一天的日线必然给出不同的结果。
+   * 把这件事写成断言，是为了让它不能“靠巧合通过”，也能在有人把阈值改成更敏感时先炸。
+   */
+  test("同一只票在 10:00 与收盘不是同一个输入：成交额阈值早盘会误否", () => {
+    // 10:00 左右：全天成交只跑了两成（0.62 亿 < 2 亿门槛），量比靠开盘 burst 到 2.4
+    const morning = scoreStock(
+      featuresFromSnapshot(
+        mkSnap({ amountYuan: 0.62e8, volumeHands: 60_000, volumeRatio: 2.4, price: 10.42, vwap: 10.3 }),
+        bar.date,
+      ),
+    );
+    const close = scoreStock(featuresFromDaily(bar, prevBar, avg5, "测试股份", "600000"));
+    expect(morning.rejects.join()).toContain("成交额"); // 早盘被流动性阈值误否
+    expect(close.rejects).toEqual([]); // 收盘同一只票是合格候选
+    // 阈值含义随时间漂移：同一个 scoreStock 在一天里不是同一个筛子
+    expect(morning.score).not.toBe(close.score);
   });
 });

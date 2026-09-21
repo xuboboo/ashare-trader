@@ -110,6 +110,78 @@ describe("T+1 与账本", () => {
     book.applyFill(buy());
     expect(book.positions.get("600000")!.stopPrice).toBe(8.8); // 9.07 * 0.97
   });
+
+  test("成交带了止损线（ATR 口径）就以它为准，不再被固定百分比覆盖", () => {
+    // 这是审计发现的 P0：STOP_MODE=atr 下建议单算的是 ATR 线，但旧代码在成交那一刻
+    // 把持仓止损写回 fixed，导致“升级已接入实盘”的止损实际上从未生效。
+    const book = new Book(100_000);
+    book.rollover("2026-09-18");
+    book.applyFill(buy({ stopPrice: 8.2 })); // 相当于一张 ATR 更宽的单
+    expect(book.positions.get("600000")!.stopPrice).toBe(8.2);
+  });
+
+  test("重放重建账本时止损线不丢（流水是唯一事实）", () => {
+    const book = new Book(100_000);
+    book.rollover("2026-09-18");
+    book.applyFill(buy({ stopPrice: 8.2 }));
+    const replay = new Book(100_000);
+    replay.rebuild(book.fills);
+    expect(replay.positions.get("600000")!.stopPrice).toBe(8.2);
+  });
+
+  test("同一分钟两笔同向同标的不会撞 id（否则撤错一笔）", () => {
+    const a = buy();
+    const b = buy();
+    expect(a.id).not.toBe(b.id);
+  });
+
+  test("verify() 发现快照与流水不平时按流水重建（长跑进程快照腐掉时自愈）", () => {
+    const book = new Book(100_000);
+    book.rollover("2026-09-18");
+    book.applyFill(buy());
+    const good = book.cash;
+    book.cash = 100_000; // 模拟另一个进程把整份 positions.json 写回了空账本
+    book.positions.clear();
+    const msg = book.verify("测试");
+    expect(msg).toContain("已按流水重建");
+    expect(book.cash).toBeCloseTo(good, 2);
+    expect(book.positions.size).toBe(1);
+  });
+
+  test("建仓时两条止损线都落进持仓，并初始化建仓后最低价水位", () => {
+    const book = new Book(100_000);
+    book.rollover("2026-09-18");
+    book.applyFill(buy({ stopPrice: 8.2, stopFixed: 8.8, stopAtr: 8.2 }));
+    const p = book.positions.get("600000")!;
+    expect(p.stopPrice).toBe(8.2); // active = ATR
+    expect(p.stopFixed).toBe(8.8);
+    expect(p.stopAtr).toBe(8.2);
+    expect(p.lowWater).toBe(9.07); // 建仓那一刻就是水位起点
+  });
+
+  test("trackLowWater 只往下调水位，并把缺失价格当作无信息", () => {
+    const book = new Book(100_000);
+    book.rollover("2026-09-18");
+    book.applyFill(buy({ stopPrice: 8.2, stopFixed: 8.8, stopAtr: 8.2 }));
+    book.trackLowWater(new Map([["600000", 8.6], ["999999", 1]])); // 第二只不是持仓，无影响
+    expect(book.positions.get("600000")!.lowWater).toBe(8.6);
+    book.trackLowWater(new Map([["600000", 9.4]])); // 更高的价不会把水位抬上去
+    expect(book.positions.get("600000")!.lowWater).toBe(8.6);
+    book.trackLowWater(new Map()); // 没有这份标的的报价 → 不动
+    expect(book.positions.get("600000")!.lowWater).toBe(8.6);
+  });
+
+  test("重放不抹权益曲线与日切基准（它们不是成交的函数）", () => {
+    const book = new Book(100_000);
+    book.rollover("2026-09-18");
+    book.applyFill(buy());
+    book.recordEquity("2026-09-18");
+    const curve = book.equityCurve.length;
+    const dayStart = book.dayStartEquity;
+    book.rebuild(book.fills);
+    expect(book.equityCurve).toHaveLength(curve);
+    expect(book.dayStartEquity).toBe(dayStart);
+  });
 });
 
 describe("撤销成交（重放重建账本）", () => {

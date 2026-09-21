@@ -2,7 +2,7 @@
  * 账簿：持仓、T+1 可卖/冻结、现金与已实现盈亏。影子盘、人工回填、回测三条路共用它，
  * 所以"回测赚钱、实盘对不上账"这种坑不存在。
  */
-import { mkdir } from "node:fs/promises";
+import { mkdir, rename } from "node:fs/promises";
 import { join } from "node:path";
 import { config } from "./config";
 import { buyCosts, sellCosts, type Costs } from "./costs";
@@ -27,6 +27,20 @@ export interface Fill {
   signalId?: string;
   /** 卖出时才有：这一笔实现的盈亏（元，已扣双边费用） */
   realizedPnl?: number;
+  /**
+   * 买入时：这张单当初算好的止损触发线（fixed 或 ATR 口径）。
+   * 成交记录里必须带着它，否则持仓只能拿默认百分比反推 ——
+   * STOP_MODE=atr 就会在成交那一刻静默变回 fixed（审计过一次的真实缺陷）。
+   * 流水是唯一事实，rebuild() 靠这个字段重现同样的止损线。
+   */
+  stopPrice?: number;
+  /**
+   * 建仓时两条口径的止损线也随成交落盘（与 stopPrice 同一参考价算出）。
+   * active 那条决定真实退出；另一条只为事后对照存在 —— 没有它，
+   * “ATR 到底比固定 3% 好多少”只能靠同一段历史扫参回答，不能用手上这些成交回答。
+   */
+  stopFixed?: number;
+  stopAtr?: number;
   /** 人工回填相对建议价的滑点 bps */
   slippageBps?: number;
   /** 成交瞬间的盘口价差（(卖一-买一)/中间价，bps）：审计影子成交价真实性的原始证据 */
@@ -46,7 +60,16 @@ export interface Position {
   /** 已发生的买入费用，卖出时按比例结转进已实现盈亏 */
   feesPaid: number;
   openDate: string;
+  /** 建议单的止损触发线（fixed 或 ATR）；成交时由 Fill.stopPrice 带入 */
   stopPrice: number;
+  /** 建仓时的固定止损与 ATR 止损（两条都存，用于反事实对照） */
+  stopFixed?: number;
+  stopAtr?: number;
+  /**
+   * 建仓之后观察到的最低价。只在行情新鲜且属于今天的快照上更新；
+   * 建仓当日只用逐轮现价（不能把建仓前的下影线算进来），次日起可以用当日最低价。
+   */
+  lowWater?: number;
   lastPrice: number;
   /** 开盘浮盈止盈：当日已评估过一次（无论触发与否），不重复执行 */
   openingTpDone?: boolean;
@@ -63,6 +86,23 @@ export interface EquityPoint {
 
 const posFile = () => join(config.dataDir, "positions.json");
 const tradeFile = () => join(config.dataDir, "trades.jsonl");
+
+/**
+ * 原子写：先写同名 .tmp 再 rename。Windows 上 Bun.write 是就地截断重写，
+ * 两个进程（或一个写一个读）撞上去就会得到半份文件 —— 而整份流水的解析
+ * 是一个 try/catch，一行坏就全丢。这是真实发生过的账本事故。
+ */
+export async function writeFileAtomic(file: string, text: string): Promise<void> {
+  const tmp = `${file}.${process.pid}.tmp`;
+  await Bun.write(tmp, text);
+  try {
+    await rename(tmp, file);
+  } catch (e) {
+    // rename 失败（Windows 上目标被临时占用）：留下 tmp 供人工合并，绝不静默丢
+    console.error(`[book] 原子替换失败 ${file}: ${(e as Error).message}（数据保留在 ${tmp}）`);
+    throw e;
+  }
+}
 
 export class Book {
   cash: number;
@@ -102,32 +142,72 @@ export class Book {
     }
     try {
       const text = await Bun.file(tradeFile()).text();
-      this.fills = text
-        .split("\n")
-        .filter(Boolean)
-        .map((l) => JSON.parse(l) as Fill);
+      // 逐行容错：历史上有一行被写坏过（半份写入），不能因此把整个账本当空
+      let bad = 0;
+      this.fills = [];
+      for (const line of text.split("\n")) {
+        if (!line.trim()) continue;
+        try {
+          const f = JSON.parse(line) as Fill;
+          if (f && f.id && f.code && f.side && f.qty > 0) this.fills.push(f);
+          else bad++;
+        } catch {
+          bad++;
+        }
+      }
+      if (bad) console.error(`[book] trades.jsonl 有 ${bad} 行不可用，已跳过（其余照常重放）`);
     } catch {
       /* 还没有成交 */
     }
     // 自愈校验：positions.json 若与流水重放不一致（多实例互踩/手改文件），
     // 以流水为准重建 —— trades.jsonl 是唯一事实，快照只是缓存。
-    if (this.fills.length) {
-      const replay = new Book(this.initialCash);
-      replay.rebuild(this.fills, this.initialCash);
-      if (Math.abs(replay.cash - this.cash) > 1 || replay.positions.size !== this.positions.size) {
-        console.error(
-          `[book] 检测到账本不一致（cash ${this.cash} vs 重放 ${replay.cash}，持仓 ${this.positions.size} vs ${replay.positions.size}），已按流水重建`,
-        );
-        this.cash = replay.cash;
-        this.realizedTotal = replay.realizedTotal;
-        this.positions = replay.positions;
-      }
+    this.verify("启动加载");
+  }
+
+  /**
+   * 用成交流水重放出现金/持仓/已实现，与内存里的快照比对；不平就地重建并返回说词。
+   * 每次 save() 都跑一遍：自愈不应该只在启动时发生一次，长跑进程的快照同样会腐。
+   */
+  verify(when = "校验"): string | null {
+    const replay = new Book(this.initialCash);
+    replay.replayFrom(this.fills, this.initialCash);
+    const cashGap = Math.abs(replay.cash - this.cash);
+    if (cashGap <= 1 && replay.positions.size === this.positions.size) return null;
+    const msg = `[book] ${when}发现快照与流水不平（cash ${this.cash} vs 重放 ${replay.cash}，持仓 ${this.positions.size} vs ${replay.positions.size}），已按流水重建`;
+    console.error(msg);
+    this.cash = replay.cash;
+    this.realizedTotal = replay.realizedTotal;
+    this.positions = replay.positions;
+    return msg;
+  }
+
+  /** 只重放现金/持仓/已实现，不动权益曲线与日切基准（它们是市场标记历史，与成交无关）。 */
+  replayFrom(fills: Fill[], cashAtStart = this.initialCash): void {
+    const curve = this.equityCurve;
+    const dayStart = this.dayStartEquity;
+    const peak = this.peakEquity;
+    const saved = fills; // applyFill 会往 this.fills 里 push，先把输入与输出分开
+    this.cash = cashAtStart;
+    this.positions = new Map();
+    this.realizedTotal = 0;
+    this.fills = [];
+    this.lastDate = ""; // 让 T+1 解锁随重放自然发生（重放完停在最后一笔成交那天，下一次日切照常）
+    const sorted = [...saved].sort(
+      (a, b) => `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`) || a.ts - b.ts,
+    );
+    for (const f of sorted) {
+      this.rollover(f.date);
+      this.applyFill(f);
     }
+    this.equityCurve = curve;
+    this.dayStartEquity = dayStart;
+    this.peakEquity = peak;
   }
 
   async save(): Promise<void> {
+    this.verify("落盘前");
     await mkdir(config.dataDir, { recursive: true });
-    await Bun.write(
+    await writeFileAtomic(
       posFile(),
       JSON.stringify(
         {
@@ -148,15 +228,18 @@ export class Book {
 
   async appendFill(fill: Fill): Promise<void> {
     await mkdir(config.dataDir, { recursive: true });
-    const file = Bun.file(tradeFile());
-    const prev = (await file.exists()) ? await file.text() : "";
-    await Bun.write(file, prev + JSON.stringify(fill) + "\n");
+    const file = tradeFile();
+    const prev = (await Bun.file(file).exists()) ? await Bun.file(file).text() : "";
+    await writeFileAtomic(file, prev + JSON.stringify(fill) + "\n");
   }
 
   /** 用内存里的成交重写流水（撤销一笔后用它保证流水与账本不会两张皮） */
   async rewriteTrades(): Promise<void> {
     await mkdir(config.dataDir, { recursive: true });
-    await Bun.write(tradeFile(), this.fills.map((f) => JSON.stringify(f)).join("\n") + (this.fills.length ? "\n" : ""));
+    await writeFileAtomic(
+      tradeFile(),
+      this.fills.map((f) => JSON.stringify(f)).join("\n") + (this.fills.length ? "\n" : ""),
+    );
   }
 
   /**
@@ -165,21 +248,10 @@ export class Book {
    * 遇到部分卖出、费用分摊就会算出不平的账。
    */
   rebuild(fills: Fill[], cashAtStart = this.initialCash): void {
-    const input = [...fills]; // applyFill 会 push 进 this.fills，先拿副本避免自引用
-    this.cash = cashAtStart;
     this.initialCash = cashAtStart;
-    this.positions.clear();
-    this.realizedTotal = 0;
-    this.equityCurve = [];
-    this.fills = [];
-    this.lastDate = "";
-    const sorted = input.sort(
-      (a, b) => `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`) || a.ts - b.ts,
-    );
-    for (const f of sorted) {
-      this.rollover(f.date);
-      this.applyFill(f);
-    }
+    this.replayFrom(fills, cashAtStart);
+    // 权益曲线不抹：历史点是当时盯市的结果，抹了就等于造一段空白历史。
+    // 今天那个点会在下一次 recordEquity 时被覆盖（同日期替换末尾），不会留错账。
   }
 
   /**
@@ -223,7 +295,10 @@ export class Book {
           avgPrice: 0,
           feesPaid: 0,
           openDate: fill.date,
-          stopPrice: round2(fill.price * (1 - config.stopLossPct / 100)),
+          stopPrice: this.stopFromFill(fill, fill.price),
+          stopFixed: fill.stopFixed,
+          stopAtr: fill.stopAtr,
+          lowWater: fill.price,
           lastPrice: fill.price,
         } satisfies Position);
       const totalQty = p.qty + fill.qty;
@@ -233,6 +308,12 @@ export class Book {
       p.feesPaid = round2(p.feesPaid + costs.total);
       p.name = fill.name || p.name;
       p.lastPrice = fill.price;
+      p.lowWater = Math.min(p.lowWater ?? fill.price, fill.price);
+      // 每一笔买入都把自己那张单的止损线当成当前持仓的止损线：
+      // 退出阶梯只有一条线，它必须与面板/建议单上显示的那条一致，不能事后另算一套。
+      p.stopPrice = this.stopFromFill(fill, p.avgPrice);
+      if (fill.stopFixed) p.stopFixed = fill.stopFixed;
+      if (fill.stopAtr) p.stopAtr = fill.stopAtr;
       this.positions.set(fill.code, p);
       this.cash = round2(this.cash - amount - costs.total);
       return undefined;
@@ -257,10 +338,32 @@ export class Book {
     return realized;
   }
 
+  /**
+   * 持仓止损线：优先用成交记录里带的（建议单算出来的那条，含 ATR 口径），
+   * 没带（人工回填、早期流水）才回退到“成交价 × (1 − STOP_LOSS_PCT%)”。
+   * 回退是降级，不是默认路径 —— 降级时日志会说清楚。
+   */
+  private stopFromFill(fill: Fill, base: number): number {
+    if (fill.stopPrice && fill.stopPrice > 0 && fill.stopPrice < base) return round2(fill.stopPrice);
+    return round2(base * (1 - config.stopLossPct / 100));
+  }
+
   markToMarket(prices: Map<string, number>): void {
     for (const p of this.positions.values()) {
       const px = prices.get(p.code);
       if (px && px > 0) p.lastPrice = px;
+    }
+  }
+
+  /**
+   * 逐轮更新持仓的“建仓后最低价”（反事实止损对照用的水位）。
+   * 只在调用方确认行情新鲜、属于今天、且处于可交易时段时才调 —— 拿隔夜价或
+   * 建仓前的下影线更新水位，会把对照做成假结果。
+   */
+  trackLowWater(prices: Map<string, number>): void {
+    for (const p of this.positions.values()) {
+      const px = prices.get(p.code);
+      if (px && px > 0) p.lowWater = Math.min(p.lowWater ?? px, px);
     }
   }
 
@@ -306,6 +409,9 @@ export class Book {
 
 export const round2 = (x: number) => Math.round((x + Number.EPSILON) * 100) / 100;
 
+/** 成交 id 的单调后缀。进程内递增即可（重放读的是落盘的完整 id）。 */
+let idSeq = 0;
+
 export function makeFill(args: {
   code: string;
   name: string;
@@ -316,13 +422,20 @@ export function makeFill(args: {
   time: string;
   kind: "paper" | "manual";
   signalId?: string;
+  /** 建议单算好的止损触发线（买入侧有意义），随流水落盘以便重放重现 */
+  stopPrice?: number;
+  /** 同时落盘另一口径的止损线（反事实对照），与 stopPrice 同一参考价算出 */
+  stopFixed?: number;
+  stopAtr?: number;
   slippageBps?: number;
   spreadBps?: number;
   note?: string;
 }): Fill {
   const amount = round2(args.price * args.qty);
   return {
-    id: `${args.date.replace(/-/g, "")}-${args.time.replace(":", "")}-${args.code}-${args.side}`,
+    // id 必须唯一：同一分钟内的两笔同向同标的单（同日两次 /scan、影子单 + 人工回填）
+    // 撞 id 会让 removeFill 撤错一笔，所以尾巴上加一个单调序号。
+    id: `${args.date.replace(/-/g, "")}-${args.time.replace(":", "")}-${args.code}-${args.side}-${(++idSeq).toString(36)}`,
     ts: Date.now(),
     date: args.date,
     time: args.time,
@@ -335,6 +448,9 @@ export function makeFill(args: {
     costs: args.side === "buy" ? buyCosts(amount) : sellCosts(amount),
     kind: args.kind,
     signalId: args.signalId,
+    stopPrice: args.stopPrice,
+    stopFixed: args.stopFixed,
+    stopAtr: args.stopAtr,
     slippageBps: args.slippageBps,
     spreadBps: args.spreadBps,
     note: args.note,
