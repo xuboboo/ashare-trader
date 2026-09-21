@@ -574,6 +574,7 @@ export class Engine {
    */
   private async recordShadow(clock: EngineClock, scored: Scored[], gate: Gate, active: Decision): Promise<void> {
     const models: Model[] = [];
+    if (config.model !== "factor") models.push(new FactorModel());
     if (config.model !== "local") models.push(new LocalModel());
     if (config.model !== "jev" && config.typesafeApiKey) models.push(new JevModel());
     if (!models.length) return;
