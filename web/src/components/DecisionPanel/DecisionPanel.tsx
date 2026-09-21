@@ -55,11 +55,13 @@ export default function DecisionPanel({ event, history, latest, meta, nowMs }: P
     ageSec === null ? "" : ageSec < 60 ? `${ageSec}s 前` : ageSec < 3600 ? `${Math.round(ageSec / 60)} 分钟前` : `${Math.round(ageSec / 3600)} 小时前`;
 
   const cadence = meta?.decideEveryMs ? `${Math.round(meta.decideEveryMs / 1000)}s` : "60s";
-  const minProb = meta?.minProb !== undefined ? `${Math.round(meta.minProb * 100)}%` : "55%";
   const exitAt = meta?.forceExitAt ?? "10:00";
   const bankroll = meta?.bankrollCny !== undefined ? `${(meta.bankrollCny / 10000).toFixed(0)} 万` : "1 万";
   const size = meta?.sizeCny !== undefined ? `${Math.round(meta.sizeCny).toLocaleString()}` : "3,300";
-  const stop = meta?.stopLabel ?? "3%";
+  const stop = meta?.stopLabel ?? "次日止损触发线 −3%";
+  const entryRule = meta?.entryRule ?? `规则打分排序，取前 ${meta?.maxPositions ?? 3} 只`;
+  const window = meta?.openWindow ?? "09:30–14:57";
+  const maxPos = meta?.maxPositions ?? 3;
 
   const recent = history.slice(-8).reverse();
   return (
@@ -74,7 +76,9 @@ export default function DecisionPanel({ event, history, latest, meta, nowMs }: P
 
       <div className="decisionLabel">常设命令 · STANDING ORDER</div>
       <div className="decisionOrder">
-        {`> 盘前预选一次，开盘后全程决策。概率 ≥ ${minProb} 才买，隔夜期限：次日 ${exitAt} 前清仓（策略期限，非交易所规定）。本金 ¥${bankroll} · 单笔 ¥${size} · 止损 ${stop}。`}
+        {`> 盘前预选一次；开仓窗口 ${window}，全程按节奏决策。${entryRule}。
+> 普通 A 股 T+1；策略最迟次日 ${exitAt} 清仓。本金 ¥${bankroll} · 单笔上限 ¥${size} · 最多 ${maxPos} 仓 · ${stop}。
+> 卖出只执行硬规则，模型不得干预。`}
       </div>
 
       <div className="decisionLabel" style={{ marginTop: 14 }}>

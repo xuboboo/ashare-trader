@@ -175,6 +175,9 @@ export interface Meta {
   minProb?: number;
   forceExitAt?: string;
   stopLabel?: string;
+  maxPositions?: number;
+  entryRule?: string;
+  openWindow?: string;
 }
 
 /** /equity 的权益曲线点（每个交易日一个） */

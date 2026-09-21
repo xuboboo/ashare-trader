@@ -753,8 +753,14 @@ export class Engine {
       forceExitAt: hhmmOf(config.forceExitMin),
       stopLabel:
         config.stopMode === "atr"
-          ? `ATR×${config.atrK}（封底 10%）`
-          : `${config.stopLossPct}%`,
+          ? `次日止损触发线 −ATR×${config.atrK}（封底 −10%）`
+          : `次日止损触发线 −${config.stopLossPct}%`,
+      maxPositions: config.k,
+      entryRule:
+        config.model === "factor"
+          ? `规则打分排序，取前 ${config.k} 只`
+          : `校准净胜概率 ≥${Math.round(config.jevMinProb * 100)}%`,
+      openWindow: `${hhmmOf(config.session.morningStart)}–${hhmmOf(config.session.afternoonEnd)}`,
     };
   }
 

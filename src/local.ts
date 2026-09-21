@@ -80,6 +80,8 @@ export interface LocalWeights {
     valMinProb: number;
     /** 阈值扫描：各阈值下的采纳数与平均净期望，用于选择 JEV_MIN_PROB */
     thresholdSweep?: { p: number; n: number; netBps: number | null }[];
+    /** 概率校准桶：预测概率 -> 实际频率与桶内平均净期望（EV 估计的原始数据） */
+    calibration?: { pMean: number; n: number; actualFreq: number; meanNetBps: number | null }[];
   };
 }
 
@@ -117,6 +119,15 @@ export class LocalModel implements Model {
 
   private get minProb(): number {
     return this.opts.minProb ?? config.jevMinProb;
+  }
+
+  /** 用校准桶把概率映射成 EV 估计（净期望 bp）；无校准数据返回 null，不编数字。 */
+  private evEstimate(p: number, w: LocalWeights): number | null {
+    const cal = w.metrics.calibration;
+    if (!cal || !cal.length) return null;
+    let best = cal[0]!;
+    for (const c of cal) if (Math.abs(c.pMean - p) < Math.abs(best.pMean - p)) best = c;
+    return best.meanNetBps;
   }
 
   /** 权重惰性加载一次；读取失败或 schema 不符都视为"没有模型"。 */
@@ -187,13 +198,18 @@ export class LocalModel implements Model {
       .filter((c) => (probs.get(c.features.code) ?? 0) >= this.minProb)
       .sort((a, b) => (probs.get(b.features.code) ?? 0) - (probs.get(a.features.code) ?? 0))
       .slice(0, Math.min(s.openSlots, config.k))
-      .map((c) => ({
-        code: c.features.code,
-        name: c.features.name,
-        probability: probs.get(c.features.code) ?? 0,
-        score: c.score,
-        reasons: [...c.reasons, `本地模型判定 ${(100 * (probs.get(c.features.code) ?? 0)).toFixed(0)}%`],
-      }));
+      .map((c) => {
+        const p = probs.get(c.features.code) ?? 0;
+        const ev = this.evEstimate(p, w);
+        const evNote = ev === null ? "" : ` 净期望≈${(ev / 100).toFixed(2)}%`;
+        return {
+          code: c.features.code,
+          name: c.features.name,
+          probability: p,
+          score: c.score,
+          reasons: [...c.reasons, `本地模型判定 ${(100 * p).toFixed(0)}%${evNote}`],
+        };
+      });
 
     const best = Math.max(...probs.values());
     return {

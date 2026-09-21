@@ -103,6 +103,9 @@ function parseMeta(raw: Record<string, unknown>): Meta | null {
     sizeCny: typeof raw.sizeCny === "number" ? raw.sizeCny : undefined,
     minProb: typeof raw.minProb === "number" ? raw.minProb : undefined,
     forceExitAt: typeof raw.forceExitAt === "string" ? raw.forceExitAt : undefined,
+    maxPositions: typeof raw.maxPositions === "number" ? raw.maxPositions : undefined,
+    entryRule: typeof raw.entryRule === "string" ? raw.entryRule : undefined,
+    openWindow: typeof raw.openWindow === "string" ? raw.openWindow : undefined,
   };
 }
 

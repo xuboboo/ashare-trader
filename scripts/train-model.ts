@@ -229,9 +229,10 @@ console.log(`最终模型  训练 ${train.length}（< ${splitDate}）  训练集
 console.log(`留出集    AUC ${aucOf(val, valP).toFixed(3)}  Brier ${valBrier.toFixed(4)}  正例率 ${valBase.toFixed(3)}`);
 console.log(`留出集    全体平均净期望 ${(val.reduce((s, x) => s + x.netBps, 0) / (val.length || 1)).toFixed(1)}bp（不带筛选的基线）`);
 
-// 概率分桶校准表
+// 概率分桶校准表：预测概率 vs 实际频率 + 桶内平均净期望（EV 估计的原始数据）
 const buckets = [0, 0.2, 0.4, 0.6, 0.8, 1.001];
-console.log("校准      预测概率桶 -> 实际频率（桶内样本数）");
+const calibration: { pMean: number; n: number; actualFreq: number; meanNetBps: number | null }[] = [];
+console.log("校准      预测概率桶 -> 实际频率 / 平均净期望（桶内样本数）");
 for (let i = 0; i < buckets.length - 1; i++) {
   const idx: number[] = [];
   valP.forEach((pp, k) => {
@@ -239,7 +240,9 @@ for (let i = 0; i < buckets.length - 1; i++) {
   });
   if (!idx.length) continue;
   const freq = idx.reduce((s, k) => s + val[k]!.label, 0) / idx.length;
-  console.log(`  [${buckets[i]!.toFixed(1)}, ${buckets[i + 1]!.toFixed(1)})  ${(buckets[i]! + buckets[i + 1]!) / 2 >= 0 ? "" : ""}实际 ${freq.toFixed(3)}（${idx.length}）`);
+  const meanNet = idx.reduce((s, k) => s + val[k]!.netBps, 0) / idx.length;
+  calibration.push({ pMean: (buckets[i]! + buckets[i + 1]!) / 2, n: idx.length, actualFreq: freq, meanNetBps: meanNet });
+  console.log(`  [${buckets[i]!.toFixed(1)}, ${buckets[i + 1]!.toFixed(1)})  实际 ${freq.toFixed(3)}（${idx.length}）  净期望 ${meanNet.toFixed(1)}bp`);
 }
 
 const minProb = config.jevMinProb;
@@ -279,6 +282,7 @@ const weights: LocalWeights = {
     valAcceptedNetBps,
     valAcceptedCount: acceptedIdx.length,
     valMinProb: minProb,
+    calibration,
     thresholdSweep,
   },
 };
