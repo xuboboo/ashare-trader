@@ -940,8 +940,10 @@ export class Engine {
       entryRule:
         config.model === "factor"
           ? `规则打分排序，取前 ${config.k} 只`
-          : `校准净胜概率 ≥${Math.round(config.jevMinProb * 100)}%`,
-      openWindow: `${hhmmOf(config.session.morningStart)}–${hhmmOf(config.session.afternoonEnd)}`,
+          : config.model === "jev"
+            ? `Jev 净胜概率 ≥${Math.round(config.jevMinProb * 100)}%（未校准）`
+            : `本地模型净胜概率 ≥${Math.round(config.jevMinProb * 100)}%（留出集校准）`,
+      openWindow: `${hhmmOf(config.session.morningStart + config.openDelayMin)}–${hhmmOf(config.session.afternoonEnd)}`,
     };
   }
 
