@@ -29,6 +29,8 @@ export interface Fill {
   realizedPnl?: number;
   /** 人工回填相对建议价的滑点 bps */
   slippageBps?: number;
+  /** 成交瞬间的盘口价差（(卖一-买一)/中间价，bps）：审计影子成交价真实性的原始证据 */
+  spreadBps?: number;
   note?: string;
 }
 
@@ -297,6 +299,7 @@ export function makeFill(args: {
   kind: "paper" | "manual";
   signalId?: string;
   slippageBps?: number;
+  spreadBps?: number;
   note?: string;
 }): Fill {
   const amount = round2(args.price * args.qty);
@@ -315,6 +318,7 @@ export function makeFill(args: {
     kind: args.kind,
     signalId: args.signalId,
     slippageBps: args.slippageBps,
+    spreadBps: args.spreadBps,
     note: args.note,
   };
 }

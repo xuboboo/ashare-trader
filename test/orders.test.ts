@@ -54,6 +54,7 @@ describe("纸面撮合（保守口径）", () => {
     updateResting(o, mkSnap({ price: 10.51, low: 10.4, high: 10.6 }));
     const fill = tryPaperFill(o, mkSnap({ price: 10.51, low: 10.4, high: 10.6 }), clock)!;
     expect(fill.price).toBe(10.52); // 10.51 + 1 tick 被限价钳住
+    expect(fill.spreadBps).toBeGreaterThan(0); // 成交瞬间记录了盘口价差
     expect(fill.price).toBeGreaterThan(o.priceRef);
   });
 

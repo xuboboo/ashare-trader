@@ -184,6 +184,11 @@ export function tryPaperFill(order: SuggestedOrder, snap: Snapshot, clock: Clock
   if (buy ? order.seenLow > order.limitHigh : order.seenHigh < order.limitLow) return null;
   const raw = slipFillPrice(snap.price, order.side);
   const px = round2(buy ? Math.min(raw, order.limitHigh) : Math.max(raw, order.limitLow));
+  // 成交瞬间的盘口价差：事后审计"影子成交价够不够真实"的原始证据
+  const b1 = snap.bids[0]?.p ?? 0;
+  const a1 = snap.asks[0]?.p ?? 0;
+  const mid = (a1 + b1) / 2;
+  const spreadBps = b1 > 0 && a1 > 0 && mid > 0 ? ((a1 - b1) / mid) * 10_000 : undefined;
   return makeFill({
     code: order.code,
     name: order.name,
@@ -195,6 +200,7 @@ export function tryPaperFill(order: SuggestedOrder, snap: Snapshot, clock: Clock
     kind: "paper",
     signalId: order.signalId,
     slippageBps: order.priceRef > 0 ? ((px - order.priceRef) / order.priceRef) * 10_000 : 0,
+    spreadBps,
   });
 }
 

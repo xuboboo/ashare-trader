@@ -587,6 +587,8 @@ export class Engine {
     const name = sn?.name ?? this.universe.nameOf(args.code);
     const price = args.price ?? sn?.price ?? 0;
     if (!(price > 0)) throw new Error(`不知道 ${args.code} 的价格，请显式给 price`);
+    const b1 = sn?.bids[0]?.p ?? 0;
+    const a1 = sn?.asks[0]?.p ?? 0;
     const fill = makeFill({
       code: args.code,
       name,
@@ -598,6 +600,7 @@ export class Engine {
       kind: "manual",
       signalId: args.signalId,
       slippageBps: sn && sn.price > 0 ? ((price - sn.price) / sn.price) * 10_000 : undefined,
+      spreadBps: b1 > 0 && a1 > 0 ? ((a1 - b1) / ((a1 + b1) / 2)) * 10_000 : undefined,
       note: args.note ?? "人工回填",
     });
     if (args.signalId) {
