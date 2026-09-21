@@ -183,11 +183,16 @@ export function tryPaperFill(order: SuggestedOrder, snap: Snapshot, clock: Clock
   // 挂单之后的观察价有没有到过我们的限价
   if (buy ? order.seenLow > order.limitHigh : order.seenHigh < order.limitLow) return null;
   // 成交价用真实对手价：买吃卖一、卖打买一（last 只是"刚才别人成交在哪"）。
-  // 盘口缺失时回退 last±1tick。无论哪条路，都被限价带钳住，不追价。
+  // 对手价缺失（买一/卖一为 0）= 真的没有对手盘，这轮不成交，下轮再试；
+  // 只有整本盘口缺失（数据残缺）才按 last±1tick 兜底。无论哪条路，都被限价带钳住。
+  const hasBook = snap.bids.length > 0 && snap.asks.length > 0;
   const ask1 = snap.asks[0]?.p ?? 0;
   const bid1 = snap.bids[0]?.p ?? 0;
-  const raw =
-    buy ? (ask1 > 0 ? ask1 : slipFillPrice(snap.price, "buy")) : bid1 > 0 ? bid1 : slipFillPrice(snap.price, "sell");
+  let raw: number | null;
+  if (!hasBook) raw = slipFillPrice(snap.price, order.side);
+  else if (buy) raw = ask1 > 0 ? ask1 : null;
+  else raw = bid1 > 0 ? bid1 : null;
+  if (raw === null) return null; // 无对手盘：不成交
   const px = round2(buy ? Math.min(raw, order.limitHigh) : Math.max(raw, order.limitLow));
   // 成交瞬间的盘口价差：事后审计"影子成交价够不够真实"的原始证据
   const b1 = snap.bids[0]?.p ?? 0;

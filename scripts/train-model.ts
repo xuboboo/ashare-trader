@@ -245,6 +245,29 @@ for (let i = 0; i < buckets.length - 1; i++) {
   console.log(`  [${buckets[i]!.toFixed(1)}, ${buckets[i + 1]!.toFixed(1)})  实际 ${freq.toFixed(3)}（${idx.length}）  净期望 ${meanNet.toFixed(1)}bp`);
 }
 
+// ---- Top-K 日度报告：真实买入是"每天从候选里挑概率最高的前几只"，
+// AUC 回答不了"被买到的票赚钱吗"，这张表才是 local 模型的主指标 ----
+{
+  const byDate = new Map<string, { i: number; p: number }[]>();
+  valP.forEach((pp, i) => {
+    const d = val[i]!.date;
+    const arr = byDate.get(d) ?? [];
+    arr.push({ i, p: pp });
+    byDate.set(d, arr);
+  });
+  for (const k of [1, 3]) {
+    const chosen: number[] = [];
+    for (const [, arr] of byDate) {
+      arr.sort((a, b) => b.p - a.p);
+      chosen.push(...arr.slice(0, k).map((x) => x.i));
+    }
+    if (!chosen.length) continue;
+    const meanNet = chosen.reduce((s, i) => s + val[i]!.netBps, 0) / chosen.length;
+    const wins = chosen.filter((i) => val[i]!.label).length;
+    console.log(`Top-${k} 日度  ${chosen.length} 笔  平均净期望 ${meanNet.toFixed(1)}bp  胜率 ${((wins / chosen.length) * 100).toFixed(0)}%`);
+  }
+}
+
 const minProb = config.jevMinProb;
 const acceptedIdx = valP.map((pp, i) => (pp >= minProb ? i : -1)).filter((i) => i >= 0);
 const valAcceptedNetBps = acceptedIdx.length ? acceptedIdx.reduce((s, k) => s + val[k]!.netBps, 0) / acceptedIdx.length : null;

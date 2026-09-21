@@ -13,7 +13,7 @@ import { mkdir } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { TradingCalendar } from "./calendar";
 import { featuresFromSnapshot, ma5CloseBefore, marketGate, scoreStock, type Gate, type Scored } from "./factors";
-import { FactorModel, type Decision, type DailyBias, type Model, LlmAdvisory } from "./model";
+import { FactorModel, type Decision, type DailyBias, type Model, type SignalState, LlmAdvisory } from "./model";
 import { JevModel } from "./jev";
 import { LocalModel } from "./local";
 import { makeBuyOrder, makeExitOrder, tryPaperFill, updateResting, type Clock, type SuggestedOrder } from "./orders";
@@ -402,6 +402,16 @@ export class Engine {
         if (trading && preMarket) this.preBuyDate = clock.date;
         else this.lastBuyMs = nowMs;
 
+        // 影子对照：其余模型对同一状态的判断也落盘（防"三选一"的模型挑选偏差）。
+        // 只记录，不出单；失败静默跳过，绝不影响主链路。
+        if (decision) {
+          try {
+            await this.recordShadow(clock, scored, gate, decision);
+          } catch {
+            /* 影子记录失败不影响主流程 */
+          }
+        }
+
         // 盘前预选只出观点；连续竞价与 force（复盘）出建议单
         if (force || (trading && liveQuotes(phase) && usable)) {
           for (const pick of decision?.picks ?? []) {
@@ -496,22 +506,22 @@ export class Engine {
     return event;
   }
 
-  private async decide(clock: EngineClock, scored: Scored[], gate: Gate, mode: "buy" | "manage"): Promise<Decision> {
-    const held = [...this.book.positions.values()];
-    const buysToday = this.book.openDateCount(clock.date);
-    const openSlots = Math.max(0, config.maxDailyOpens - buysToday);
-    // 组合级风控闸：只封新开仓，不封退出（止损/清仓在亏损状态也必须走得掉）
+  private riskNow(): RiskBrake {
     const totals = this.book.totals();
-    this.lastRisk = riskBrake({
+    return riskBrake({
       equity: totals.equity,
       dayStartEquity: this.book.dayStartEquity,
       peakEquity: this.book.peakEquity,
       dayLossLimitPct: config.maxDayLossPct,
       drawdownLimitPct: config.maxDrawdownPct,
     });
-    const buyAllowed =
-      mode === "buy" && gate.allowed && (this.bias?.allowOpen ?? true) && openSlots > 0 && !this.lastRisk.buyBlocked;
-    return this.model.decide({
+  }
+
+  private signalState(clock: EngineClock, scored: Scored[], gate: Gate, mode: "buy" | "manage", risk: RiskBrake): SignalState {
+    const held = [...this.book.positions.values()];
+    const buysToday = this.book.openDateCount(clock.date);
+    const openSlots = Math.max(0, config.maxDailyOpens - buysToday);
+    return {
       date: clock.date,
       time: clock.time,
       horizon: mode === "buy" ? "尾盘买入、次日 10:00 前清仓" : "持仓退出",
@@ -520,12 +530,54 @@ export class Engine {
       candidates: scored,
       heldCodes: held.map((p) => p.code),
       allowed: {
-        buy: buyAllowed,
+        buy: mode === "buy" && gate.allowed && (this.bias?.allowOpen ?? true) && openSlots > 0 && !risk.buyBlocked,
         sell: held.some((p) => p.sellable > 0),
       },
       vetoes: this.bias?.vetoes ?? {},
       openSlots: Math.min(openSlots, config.k - held.length),
-    });
+    };
+  }
+
+  private async decide(clock: EngineClock, scored: Scored[], gate: Gate, mode: "buy" | "manage"): Promise<Decision> {
+    // 组合级风控闸：只封新开仓，不封退出（止损/清仓在亏损状态也必须走得掉）
+    this.lastRisk = this.riskNow();
+    const st = this.signalState(clock, scored, gate, mode, this.lastRisk);
+    return this.model.decide(st);
+  }
+
+  /**
+   * 影子对照：同一份状态喂给其余模型，把它们的判断追加落盘到 data/shadow/<date>.jsonl。
+   * 目的：factor / local / jev 三选一容易变成"挑表现最好的"（回测过拟合）；
+   * 从现在开始让它们在同一个状态上并行产出 forward 记录，未来对比才有资格。
+   */
+  private async recordShadow(clock: EngineClock, scored: Scored[], gate: Gate, active: Decision): Promise<void> {
+    const models: Model[] = [];
+    if (config.model !== "local") models.push(new LocalModel());
+    if (config.model !== "jev" && config.typesafeApiKey) models.push(new JevModel());
+    if (!models.length) return;
+    const st = this.signalState(clock, scored, gate, "buy", this.riskNow());
+    const shadow: { model: string; action: string; modelFailed?: boolean; picks: { code: string; probability: number }[] }[] = [];
+    for (const m of models) {
+      try {
+        const d = await m.decide(st);
+        shadow.push({ model: m.name, action: d.action, modelFailed: d.modelFailed, picks: d.picks.map((p) => ({ code: p.code, probability: p.probability })) });
+      } catch {
+        shadow.push({ model: m.name, action: "error", picks: [] });
+      }
+    }
+    const row = {
+      ts: Date.now(),
+      time: clock.time,
+      active: config.model,
+      action: active.action,
+      picks: active.picks.map((p) => ({ code: p.code, probability: p.probability })),
+      shadow,
+    };
+    const dir = join(config.dataDir, "shadow");
+    await mkdir(dir, { recursive: true });
+    const file = join(dir, `${clock.date}.jsonl`);
+    const prev = (await Bun.file(file).exists()) ? await Bun.file(file).text() : "";
+    await Bun.write(file, prev + JSON.stringify(row) + "\n");
   }
 
   /**

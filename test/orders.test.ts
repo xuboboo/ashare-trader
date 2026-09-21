@@ -92,6 +92,18 @@ describe("纸面撮合（保守口径）", () => {
     expect(tryPaperFill({ ...o, side: "sell", seenHigh: 12 }, mkSnap({ oneLineDown: true, price: 9, low: 9, high: 9 }), clock)).toBeNull();
   });
 
+  test("无对手盘不成交：盘口存在但买一/卖一为 0，这轮放弃", () => {
+    const o = makeBuyOrder(scored(), clock)!;
+    // 买单：卖一为 0 = 没人卖，买不进
+    expect(tryPaperFill(o, mkSnap({ price: 10.5, bids: [{ p: 10.49, v: 100 }], asks: [{ p: 0, v: 0 }] }), clock)).toBeNull();
+    // 卖单：买一为 0 = 没人买，卖不出
+    const s = { ...o, side: "sell" as const, seenHigh: 12 };
+    expect(tryPaperFill(s, mkSnap({ price: 10.5, bids: [{ p: 0, v: 0 }], asks: [{ p: 10.51, v: 100 }] }), clock)).toBeNull();
+    // 整本盘口缺失（数据残缺）才按 last±tick 兜底
+    const fill = tryPaperFill(o, mkSnap({ price: 10.5, bids: [], asks: [] }), clock)!;
+    expect(fill.price).toBe(10.51); // last 10.5 + 1 tick，被限价钳住
+  });
+
   test("T+1：今日买入的仓位不会被要求卖出", () => {
     const book = new Book(200_000);
     book.rollover("2026-09-18");

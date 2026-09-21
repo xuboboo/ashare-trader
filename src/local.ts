@@ -108,6 +108,7 @@ export class LocalModel implements Model {
   readonly name = "local";
   private fallback = new FactorModel();
   private weightsCache: LocalWeights | null | undefined;
+  private warnedNoWeights = false;
 
   constructor(
     private opts: { weights?: LocalWeights | null; dataDir?: string; budgetCny?: number; minProb?: number } = {},
@@ -170,7 +171,10 @@ export class LocalModel implements Model {
 
     const w = await this.weights();
     if (!w) {
-      console.warn("[local] 没有可用的 model.json（先跑 bun run scripts/train-model.ts），降级为 FactorModel");
+      if (!this.warnedNoWeights) {
+        this.warnedNoWeights = true;
+        console.warn("[local] 没有可用的 model.json（先跑 bun run scripts/train-model.ts），降级为 FactorModel");
+      }
       const d = await this.fallback.decide(s);
       return { ...d, modelFailed: true, latencyMs: performance.now() - t0 };
     }
