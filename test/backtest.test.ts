@@ -84,12 +84,13 @@ describe("回测引擎", () => {
     expect(t.bps).toBeLessThan(-300);
   });
 
-  test("高开超过阈值先卖一半", () => {
+  test("开盘浮盈超过阈值先卖一半（措词与引擎一致：开盘浮盈…减半）", () => {
     const bars = setup({}, { open: 11.2, high: 11.4, low: 11.1, close: 11.3 });
     const { result } = simulate({ stocks: [stock(bars)], indexBars: indexBars(), k: 1, quiet: true, sizeCny: 50_000, bankrollCny: 150_000 });
-    const trim = result.trips.find((x) => x.note.includes("高开"))!;
+    const trim = result.trips.find((x) => x.note.includes("减半"))!;
     expect(trim).toBeTruthy();
     expect(trim.qty).toBe(2300); // 4700 的一半按 100 股取整
+    expect(result.trips).toHaveLength(2); // 剩仓另一条腿：收盘近似清仓
   });
 
   test("高价股买不起一手，整笔跳过", () => {

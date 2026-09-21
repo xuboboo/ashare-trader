@@ -14,14 +14,18 @@
  *   bun run scripts/train-model.ts --split=0.8     # 最终模型的留出集比例
  */
 import { join } from "node:path";
-import { config } from "../src/config";
-import { roundTrip } from "../src/costs";
-import { nextDayExit } from "../src/exit";
-import { featuresFromDaily, scoreStock } from "../src/factors";
+import { config, hhmm } from "../src/config";
+import { buyCosts, roundTrip, sellCosts } from "../src/costs";
+import { nextDayExit, stopLevel } from "../src/exit";
+import { featuresFromDaily, marketGate, scoreStock } from "../src/factors";
 import { LOCAL_FEATURES, featureVec, type LocalWeights, type MarketContext } from "../src/local";
 import { fetchIndexDaily, type DailyBar } from "../src/quotes";
+import { tradingElapsedMin } from "../src/session";
 import { limitPct } from "../src/symbols";
 import { loadStocks } from "./backtest";
+
+/** 与回测同一个模拟入场时刻（尾盘），闸门的时间折算也用这个点 */
+const ENTRY_AT = hhmm("14:45", 885);
 
 const args = Object.fromEntries(
   process.argv.slice(2).filter((a) => a.startsWith("--")).map((a) => {
@@ -36,9 +40,13 @@ const l2 = Number(args.l2 ?? 1e-4) || 1e-4;
 
 interface Sample {
   date: string;
+  /** 真正定价出场的那一天（切分要靠它，不能只看入场日） */
+  exitDate: string;
   x: number[];
   label: number;
   netBps: number;
+  /** 出场被碛掉了（一字跌停/次日停牌）：真实亏损更陡，不能当样本丢掉 */
+  censored: boolean;
 }
 
 interface Model {
@@ -50,12 +58,13 @@ interface Model {
 
 const dim = LOCAL_FEATURES.length;
 const costBps = roundTrip(config.sizeCny).bps;
+const stopMode = config.stopMode === "atr" ? "atr" : "fixed";
 
-// ---- 指数上下文（与实盘 SignalState.index 同口径）----
+// ---- 指数上下文（与实盘 SignalState.index 同口径）+ 当日大盘闸门 ----
 const indexBars = await fetchIndexDaily(800).catch(() => [] as DailyBar[]);
 const indexCtx = new Map<string, MarketContext>();
+const gateOpen = new Map<string, boolean>();
 {
-  const byDate = new Map(indexBars.map((b, i) => [b.date, i] as const));
   for (let i = 1; i < indexBars.length; i++) {
     const b = indexBars[i]!;
     const prev = indexBars[i - 1]!;
@@ -69,8 +78,13 @@ const indexCtx = new Map<string, MarketContext>();
       indexPct: prev.close > 0 ? ((b.close - prev.close) / prev.close) * 100 : 0,
       indexVsMa5Bp: ma5 ? ((b.close / ma5 - 1) * 1e4) / 100 : 0,
     });
+    // 引擎只在闸门开的日子问模型，那“闸门关着的样本”进入训练就是把条件分布搞混：
+    // 模型学的 P(赢) 与它实际会被使唤的那个子集不是同一个东西。
+    gateOpen.set(
+      b.date,
+      marketGate({ price: b.close, amountYi: b.amountYuan / 1e8 }, ma5, null, tradingElapsedMin(ENTRY_AT)).allowed,
+    );
   }
-  void byDate;
 }
 
 // ---- 样本构建 ----
@@ -81,10 +95,25 @@ if (stocks.length < 10) {
 }
 
 const samples: Sample[] = [];
-let skippedOneLineDown = 0;
+let censoredCount = 0;
 let skippedSuspNext = 0;
+let skippedGateClosed = 0;
+let skippedNoLot = 0;
+const r2 = (x: number) => Math.round((x + Number.EPSILON) * 100) / 100;
 for (const s of stocks) {
   const bars = s.bars;
+  // ATR₁₄（与回测同一算法：真实波幅的简单均值，不足 14 根为 undefined → stopLevel 自动回退 fixed）
+  const tr = bars.map((b, i) => {
+    if (i === 0) return b.high - b.low;
+    const pc = bars[i - 1]!.close;
+    return Math.max(b.high - b.low, Math.abs(b.high - pc), Math.abs(b.low - pc));
+  });
+  const atrAt = (i: number): number | undefined => {
+    if (i < config.atrN) return undefined;
+    let sum = 0;
+    for (let j = i - config.atrN + 1; j <= i; j++) sum += tr[j]!;
+    return sum / config.atrN;
+  };
   for (let i = 5; i < bars.length - 1; i++) {
     const bar = bars[i]!;
     const prevBar = bars[i - 1]!;
@@ -98,27 +127,63 @@ for (const s of stocks) {
     const f = featuresFromDaily(bar, prevBar, av5, s.code, s.code);
     const sc = scoreStock(f);
     if (sc.rejects.length) continue; // 与实盘同一套硬筛选
-    const entry = Math.round((bar.close + 0.01) * 100) / 100;
-    const stop = Math.round(entry * (1 - config.stopLossPct / 100) * 100) / 100;
+    // 只留“引擎真的会问模型”的日子：闸门关着的日子不进入训练集
+    if (gateOpen.get(bar.date) === false) {
+      skippedGateClosed++;
+      continue;
+    }
+    const entry = r2(bar.close + 0.01);
+    if (entry > f.limitUp || f.oneLineUp || bar.close >= f.limitUp) continue; // 封板买不进
+    const qty = Math.floor(config.sizeCny / entry / 100) * 100;
+    if (qty < 100) {
+      skippedNoLot++; // 买不起一手：实盘根本不会出这张单，不该进样本
+      continue;
+    }
+    const stop = stopLevel(entry, {
+      mode: stopMode,
+      atr: atrAt(i),
+      k: config.atrK,
+      fixedPct: config.stopLossPct,
+    });
     const outcome = nextDayExit({
       next,
       prevClose: prevBar.close,
       entry,
       stop,
+      qty,
       limitPctFrac: limitPct(s.code, ""),
     });
-    if (!outcome.legs.length || outcome.blended === null) {
-      skippedOneLineDown++;
-      continue;
+    const amount = r2(entry * qty);
+    let exitProceeds = 0;
+    let sellCost = 0;
+    let censored = false;
+    if (outcome.legs.length && outcome.blended !== null) {
+      for (const leg of outcome.legs) {
+        exitProceeds += leg.price * leg.qty;
+        sellCost += sellCosts(r2(leg.price * leg.qty)).total;
+      }
+    } else {
+      // 一字跌停卖不出：旧实现直接丢掉这些样本，等于把标签里最陡那段亏损剪掉
+      // （一字跌停就是 -10%/-20%，恰好是唯一能跑输成本的那批）。现在按次日收盘强平定价，
+      // 并单独计数；停牌（次日没量）按上一个已知价强平。
+      censored = true;
+      censoredCount++;
+      const px = next.volumeHands > 0 ? next.close : bar.close;
+      if (next.volumeHands <= 0) skippedSuspNext++;
+      exitProceeds = px * qty;
+      sellCost = sellCosts(r2(px * qty)).total;
     }
-    if (next.volumeHands <= 0) {
-      skippedSuspNext++;
-      continue;
-    }
-    const grossBps = ((outcome.blended - entry) / entry) * 10_000;
-    const netBps = grossBps - costBps;
+    const realized = exitProceeds - amount - buyCosts(amount).total - sellCost;
+    const netBps = amount > 0 ? (realized / amount) * 10_000 : 0;
     const m = indexCtx.get(bar.date);
-    samples.push({ date: bar.date, x: featureVec({ features: f, score: sc.score }, m), label: netBps > 0 ? 1 : 0, netBps });
+    samples.push({
+      date: bar.date,
+      exitDate: next.date,
+      x: featureVec({ features: f, score: sc.score }, m),
+      label: netBps > 0 ? 1 : 0,
+      netBps,
+      censored,
+    });
   }
 }
 if (samples.length < 500) {
@@ -203,11 +268,16 @@ const dates = [...new Set(samples.map((s) => s.date))].sort();
 const seg = (k: number) => dates.slice(Math.floor((dates.length * k) / 4), Math.floor((dates.length * (k + 1)) / 4));
 const segments = [seg(0), seg(1), seg(2), seg(3)];
 const at = (segDates: string[]) => samples.filter((s) => segDates.includes(s.date));
-console.log(`样本 ${samples.length}（正例率 ${(samples.reduce((s, x) => s + x.label, 0) / samples.length).toFixed(3)}）` +
-  ` 特征 ${dim} 成本口径 ${costBps.toFixed(1)}bp 跳过：一字跌停 ${skippedOneLineDown}、次日停牌 ${skippedSuspNext}`);
+console.log(
+  `样本 ${samples.length}（正例率 ${(samples.reduce((s, x) => s + x.label, 0) / samples.length).toFixed(3)}，其中出场被卡死按强平定价 ${censoredCount} 条）` +
+    ` 特征 ${dim} 止损 ${stopMode === "atr" ? `ATR×${config.atrK}` : `fixed ${config.stopLossPct}%`} 成本口径 ${costBps.toFixed(1)}bp\n` +
+    `  跳过：闸门关 ${skippedGateClosed}、买不起一手 ${skippedNoLot}（次日停牌强平计入 censored：${skippedSuspNext}）`,
+);
 
 for (let f = 1; f <= 3; f++) {
-  const train = samples.filter((s) => s.date < segments[f]![0]!);
+  // 训练集用“出场日切在验证段之前”过滤：一个样本的标签用的是入场次日的数据，
+  // 只看入场日会把跨切点那条样本的未来结果漏进训练集（边界泄漏）。
+  const train = samples.filter((s) => s.exitDate < segments[f]![0]!);
   const val = at(segments[f]!);
   if (!train.length || !val.length) continue;
   const m = fit(train);
@@ -215,9 +285,9 @@ for (let f = 1; f <= 3; f++) {
   console.log(`walk-forward 折${f}: 训练 ${train.length}（< ${segments[f]![0]}） 验证 ${val.length}  AUC ${r.auc.toFixed(3)}  Brier ${r.brier.toFixed(4)}  正例率 ${r.base.toFixed(3)}`);
 }
 
-// ---- 最终模型：前 85% 训练，后 15% 留出 ----
+// ---- 最终模型：前 85% 训练，后 15% 留出（切点上一天出场的样本不进训练集，避免边界泄漏）----
 const splitDate = dates[Math.floor(dates.length * splitFrac)]!;
-const train = samples.filter((s) => s.date < splitDate);
+const train = samples.filter((s) => s.exitDate < splitDate);
 const val = samples.filter((s) => s.date >= splitDate);
 const model = fit(train);
 const valP = predict(model, val);
@@ -283,6 +353,22 @@ for (let p = 0.3; p <= 0.7001; p += 0.05) {
   thresholdSweep.push({ p: Math.round(p * 100) / 100, n: idx.length, netBps: net });
   console.log(`  p ≥ ${p.toFixed(2)}  ${String(idx.length).padStart(5)}  ${net === null ? "n/a" : net.toFixed(1)}`);
 }
+console.warn("  ↑ 这张表是在同一个留出集上扫 9 个阈值取最大值：挑出来的那行自带选择偏差，n 小的行当噪声看");
+
+// ---- EV 准则（而不是胜率准则）：真正的决策量是“桶内平均净期望 > 0” ----
+// 拿 P(赢) 过阈当买入条件是口径错误：止损会剪掉上行尾部，胜率赢不等于期望赢。
+const evOf = (p: number): number | null => {
+  if (!calibration.length) return null;
+  let best = calibration[0]!;
+  for (const c of calibration) if (Math.abs(c.pMean - p) < Math.abs(best.pMean - p)) best = c;
+  return best.meanNetBps;
+};
+const evIdx = valP.map((pp, i) => ((evOf(pp) ?? -1) > 0 ? i : -1)).filter((i) => i >= 0);
+const evNet = evIdx.length ? evIdx.reduce((s, k) => s + val[k]!.netBps, 0) / evIdx.length : null;
+console.log(
+  `EV 准则    校准后期望>0 才采纳：${evIdx.length}/${val.length} 笔` +
+    (evNet === null ? "（无一条桶的期望为正 → 按口径应当永远空仓）" : ` 平均净期望 ${evNet.toFixed(1)}bp`),
+);
 console.log("权重（标准化尺度）：");
 LOCAL_FEATURES.forEach((f, i) => console.log(`  ${f.name.padEnd(14)} ${model.w[i]!.toFixed(4)}`));
 console.log(`  ${"bias".padEnd(14)} ${model.b.toFixed(4)}`);
@@ -290,6 +376,9 @@ console.log(`  ${"bias".padEnd(14)} ${model.b.toFixed(4)}`);
 const weights: LocalWeights = {
   trainedAt: new Date().toISOString(),
   costBps,
+  stopMode,
+  entryAt: "14:45",
+  sizeCny: config.sizeCny,
   featureNames: LOCAL_FEATURES.map((f) => f.name),
   mean: model.mean,
   std: model.std,
@@ -305,6 +394,10 @@ const weights: LocalWeights = {
     valAcceptedNetBps,
     valAcceptedCount: acceptedIdx.length,
     valMinProb: minProb,
+    // 样本里“出场被卡死、按强平定价”的比例：它们代表真实无法按规则出场的风险
+    censoredShare: samples.length ? censoredCount / samples.length : 0,
+    valAcceptedByEvCount: evIdx.length,
+    valAcceptedByEvBps: evNet,
     calibration,
     thresholdSweep,
   },
