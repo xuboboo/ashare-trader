@@ -3,15 +3,21 @@
 这份文档说明：**代码里哪些地方是在遵守 A 股规则，以及这个项目的形态离"程序化交易"有多远**。
 不构成法律或投资建议；真要做实盘，以券商与交易所的现行条文为准。
 
-## 本项目当前不产生任何委托
+## 委托从哪里来、到哪里去
 
 | 事实 | 代码位置 |
 | --- | --- |
-| 券商通道仅有 **QMT 桥接骨架**（`src/brokers/qmt.ts` + `brokers/qmt-sidecar/qmt_bridge.py`）：默认 `mock`/`dry` 模式不下单；`live` 需 sidecar 侧显式 `QMT_CONFIRM=I-KNOW-THIS-IS-REAL` 且本机已登录 miniQMT；引擎循环内没有任何下单调用点，只有人工 `POST /broker/order` 且必须带 `confirm=SUBMIT` | `server.ts` `/broker*`、`brokers/qmt-sidecar/` |
-| 产出物是一段**给人看的文字**（代码、方向、股数、限价区间、止损、退出时点） | `orders.makeBuyOrder()` → `SuggestedOrder` |
-| 影子成交只写本地账本，不发给任何外部系统 | `orders.tryPaperFill()` + `state.Book` |
-| `PAPER=true` 是唯一执行路径；把它改成 false 也不会下单，因为引擎没有任何自动发送通道 | `config.paper` |
-| 写接口（`POST /fill`、`POST /scan`）只改本地文件 | `server.ts` |
+| 引擎主循环不产生任何委托；影子成交只写本地账本 | `engine.roundInner()` + `orders.settlePending()` + `state.Book` |
+| 券商通道是 **QMT 桥接**（`src/brokers/qmt.ts` + `brokers/qmt-sidecar/qmt_bridge.py`）：默认 `mock`/`dry` 不下单；`live` 需 sidecar 侧显式 `QMT_CONFIRM=I-KNOW-THIS-IS-REAL` 且本机已登录 miniQMT | `brokers/qmt-sidecar/` |
+| **但 `POST /broker/order` 确实是一张真实委托方向的入口**（人在浏览器/面板显式触发）。它额外要求：写接口权限 + `confirm=SUBMIT` + **同一 signalId 幂等**（重推需显式 `force:true`，因为上一笔可能已到柜台，不能静默重发） | `server.ts` `/broker*` |
+| 服务默认只监听 `127.0.0.1`（`API_HOST`）；非回环/陌生站点跨源的写请求必须带 `API_TOKEN` | `server.ts writeAllowed()` |
+| 产出物首先是一段**给人看的文字**（代码、方向、股数、限价区间、止损、退出时点） | `orders.makeBuyOrder()` → `SuggestedOrder` |
+| `PAPER=true` 下全部为影子成交；改成 false 也不会自动下单，因为引擎循环里没有调用点 | `config.paper` |
+
+**注意**：上面“默认只绑回环 + 默认无口令”的组合并不等于安全 —— 开了公网隧道或改了
+`API_HOST=0.0.0.0` 就必须同时设 `API_TOKEN`，否则局域网里任何设备（或你开着的一个网页）
+都能 `POST /reset` 清掉账本、或 `POST /broker/order` 推单。面板上的“清空账本”与
+“推给 sidecar”都是人工操作，不是无害按钮。
 
 **明确不做的事**：不用 easytrader 之类工具模拟点击券商客户端、不接未报备的外部接口、
 不做账户分仓/HOMS、不做任何形式的多账户拆单。这些既违反券商协议，也可能触及未报备
@@ -54,13 +60,16 @@
 | 规则 | 实现 | 测试 |
 | --- | --- | --- |
 | T+1：当日买入不可卖 | `state.Book` 的 `frozen` / `sellable` + 日切 `rollover()` | `test/state.test.ts`、`test/backtest.test.ts` |
+| 委托当日有效：隔日作废、收盘作废 | `orders.settlePending()` 的 `date` 与 `dayOver` 两条 | `test/settle.test.ts` |
 | 涨跌停：主板 ±10%、创业板 ±20%、ST ±5%（科创板 ±20%、北交所 ±30% 已排除在本项目范围外） | `symbols.limitPct()` | `test/session.test.ts` |
 | 涨跌停价 = 昨收 ×(1±pct) **四舍五入到分** | `symbols.limitUp/limitDown()` | 用浦发银行 9.06 → 9.97 / 8.15 实测值钉住 |
-| 最小申报 100 股、买入必须 100 的整数倍 | `symbols.LOT` / `sharesForBudget()` | 买不起一手就不出单 |
+| 最小申报 100 股、买入必须是 100 的整数倍 | `symbols.LOT` / `sharesForBudget()` | 买不起一手就不出单 |
+| 整手约束下的“卖一半”：300 股卖 100，100 股不拆 | `symbols.lotAwareHalfQty()` | `test/gate.test.ts` |
 | 交易时段：9:15-9:25 集合竞价、9:25-9:30 不可撤单、9:30-11:30、13:00-14:57、14:57-15:00 收盘集合竞价 | `session.phaseOf()` | 边界逐分钟断言 |
-| 一字涨停买不进、一字跌停卖不出、停牌不成交 | `factors.scoreStock()` + `orders.tryPaperFill()` 双重否决 | `test/orders.test.ts` |
-| 成本：佣金 `max(5 元, 0.025%)` 双边、印花税 0.05% 卖出单边、过户费 0.001%、经手+证管 ≈0.0068% | `costs.ts` | `test/costs.test.ts` |
-| 程序日志与成交留痕 | `data/trades.jsonl`（本地，不上传） | — |
+| 一字涨停买不进、一字跌停卖不出、停牌不成交、对手价为 0 不成交 | `factors.scoreStock()` + `orders.tryPaperFill()` 双重否决 | `test/orders.test.ts` |
+| 成本：佣金 `max(5 元, 0.025%)` 双边、印花税 0.05% 卖出单边、过户费 0.001%、经手+证管 ≈0.0068% | `costs.ts` | `test/costs.test.ts`（含 3300 元档 36.9bp） |
+| 止损线跟成交走（fixed 与 ATR 同一个字段），重放能重现 | `Fill.stopPrice` → `Book.applyFill()` | `test/settle.test.ts`、`test/state.test.ts` |
+| 程序日志与成交留痕 | `data/trades.jsonl`（本地，不上传）+ `data/voids.log` | — |
 
 ## 行情数据的使用限制
 

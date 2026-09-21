@@ -15,9 +15,11 @@ cd web ; bun install ; bun run dev   # 仪表盘 :3006
 
 ```
 ashare-trader · model=factor · LLM=off · PAPER（影子成交，不下真实委托） · 股票池 300 ·
-日历已加载(250天) · continuous · 14:40 尾盘选股 · :3005
+日历已加载(250天) · continuous · 全程决策中（盘中+尾盘同规则） · :3005
 ```
 
+- 默认只监听 `127.0.0.1`。要从局域网/手机直接访问，设 `API_HOST=0.0.0.0` **并且同时设 `API_TOKEN`**；
+  远程面板用 `?api=http://…&token=…`
 - `日历退化(周一~五)` → 上证指数日线三个源都没拉到，交易日判定在猜，别信当日信号
 - `LLM=off` → 没配 `LLM_API_KEY`，情绪闸门与个股 veto 不生效（规则层照常工作）
 - 时段显示 `closed` → 非交易日/非交易时段，引擎每 60s 一次心跳，不会去拉 300 支快照
@@ -74,7 +76,8 @@ Invoke-RestMethod -Method Post http://localhost:3005/fill -ContentType 'applicat
 - 清空前 `trades.jsonl` 与 `positions.json` 会先复制到 `data/archive/<时间戳>/`
 - `/reset` 不带 `{"confirm":"CLEAR"}` 直接返回 400，防一个 curl 误伤
 
-成交 id 格式为 `YYYYMMDD-HHMM-代码-方向`，由 `GET /fills` 返回（在仪表盘上点「撤销」不需要手填 id）；
+成交 id 格式为 `YYYYMMDD-HHMM-代码-方向-序号`（末尾序号保证同一分钟的两笔同向单不会撞 id，
+否则「撤销」会撤错一笔），由 `GET /fills` 返回（在仪表盘上点「撤销」不需要手填 id）；
 命令行要用 `--undo` 时先 `Invoke-RestMethod http://localhost:3005/fills | % { $_.fills.id }` 拿。
 
 ## 启用 Jev 作为决策模型
@@ -108,9 +111,14 @@ bun run start
 
 行为要点：
 
-- 与 `jev` 共用同一套筛选、同一个采纳阈值 `JEV_MIN_PROB`、同一个 `Model` 接口；面板上模型名显示 `local`
-- 训练标签 = 与回测同一条出场规则（`src/exit.ts`）算出的"扣全部成本后是否为正"；特征只用日线和快照都能算的字段，回测/实盘同一性有测试守着
-- `data/model.json` 里带着训练时的留出集指标（AUC、采纳后的净期望 bp）。指标差就是差，别自欺——当前因子集的实测结论见 README"三路决策模型"
+- 与 `jev` 共用同一套筛选与同一个 `Model` 接口；面板上模型名显示 `local`
+- **采纳规则：有校准表时看“校准后期望 > 0”，没校准表才退回 `JEV_MIN_PROB` 胜率阈值。**
+  胜率赢不等于期望赢（止损剪掉上行尾部），拿 P(赢) 过阈做买入决定是口径错误
+- 训练标签 = 与回测同一条出场规则（`src/exit.ts`）算出的“扣全部成本后是否为正”；
+  **一字跌停卖不出与次日停牌的样本不再被丢弃**（按强平定价计入，否则标签左截尾会把最陡的亏损剪掉），
+  **闸门关着的日子不进入训练集**（引擎只在闸门开时问模型，条件分布必须一致）
+- `data/model.json` 里带着训练时的留出集指标（AUC、采纳后的净期望 bp、校准桶、censored 比例）。
+  指标差就是差，别自欺——当前因子集的实测结论见 README"三路决策模型"
 - 没有模型文件或 schema 不符 → 降级回规则打分并标 `modelFailed`（和 Jev 没 key 一个待遇）
 - 每次重跑 `bun run fetch:daily` 后再 `bun run train` 即可重训；训练完全确定性（零初始化 + 全量批梯度下降）
 
@@ -138,20 +146,23 @@ bun run start
 | `COMMISSION_RATE` / `COMMISSION_MIN` | 0.00025 / 5 | 佣金，**按你券商真实档位改** |
 | `STAMP_TAX_RATE` | 0.0005 | 印花税（卖出单边） |
 | `TRANSFER_FEE_RATE` / `EXCHANGE_FEE_RATE` | 0.00001 / 0.000068 | 过户费、经手+证管 |
-| `SLIPPAGE_TICKS` | 1 | 影子成交的滑点档数 |
+| `SLIPPAGE_TICKS` | 1 | 只在盘口整本缺失时兜底；正常影子成交直接吃对手价（买吃卖一、卖打买一） |
 | `GAIN_MIN_PCT` / `GAIN_MAX_PCT` | 3 / 7 | 涨幅区间 |
 | `VOLUME_RATIO_MIN` | 1.5 | 量比下限 |
 | `MIN_AMOUNT_YI` / `MIN_MCAP_YI` | 2 / 60 | 成交额与市值门槛（市值只在实盘快照路径生效，日线口径没有该字段） |
 | `MIN_LIST_DAYS` | 60 | **回测数据层**生效：日线不够这个根数的股票直接不进样本（`fetch-daily`） |
 | `INDEX_MIN_AMOUNT_YI` | 3000 | 大盘闸门的上证成交额下限 |
-| `MODEL` | factor | `factor` = 规则打分；`jev` = 用 Jev 给每只候选出胜率（失败自动降级回 factor） |
+| `MODEL` | factor | `factor` = 规则打分；`local` = 本地概率模型（`bun run train`）；`jev` = 用 Jev 给每只候选出概率（失败自动降级回 factor） |
 | `TYPESAFE_AI_API_KEY` | 空 | Jev 的 key。**不配也能跑**，只是 `MODEL=jev` 会立刻降级并在事件里标 `modelFailed` |
 | `TYPESAFE_BASE_URL` / `JEV_MODEL_ID` | api.typesafe.ai/v1 / jev-latest | Jev 接入点 |
-| `JEV_MIN_PROB` | 0.55 | 只采纳概率高于此值的候选；调低就是拿模型当噪声放大器 |
+| `JEV_MIN_PROB` | 0.55 | 胜率阈值：jev 用它筛；local 有校准表时改用“期望>0”，没校准表才退回这个阈值 |
 | `JEV_MAX_QUESTIONS` | 20 | 一次请求问几只（共享 state、并行判定，多问几乎不增加延迟） |
 | `JEV_TIMEOUT_MS` | 15000 | 超过就降级，不卡心跳 |
 | `LLM_BASE_URL` / `LLM_MODEL` / `LLM_API_KEY` | deepseek | 另一个东西：盘前情绪闸门与个股事件 veto；留空 key 即关闭 |
 | `PORT` | 3005 | 后端端口（前端在 `web/.env.local` 的 `NEXT_PUBLIC_API_URL` 同步） |
+| `API_HOST` | 127.0.0.1 | 监听地址。面板有“清空账本”与“推给券商”两个写接口，不要在无口令时绑 0.0.0.0 |
+| `API_TOKEN` | 空 | 写接口口令（`x-auth` 头）。非回环请求与陌生站点发起的跨源写请求都需要；留空 = 只允许本机非跨源 |
+| `DATA_DIR` | data | 本地目录。相对路径永远相对仓库根解析，不跟 cwd 跑（避免从别的目录启动静默换一套账本） |
 
 ## 回测与复盘
 
@@ -160,9 +171,18 @@ bun run scripts/fetch-daily.ts --sample=100 --days=750   # 已有文件会跳过
 bun run scripts/backtest.ts --from=2024-01-01            # 输出 data/backtest.txt + .json
 bun run scripts/backtest.ts --from=2024-01-01 --sweep    # 36 组参数 → data/sweep.tsv
 bun run scripts/backtest.ts --k=1 --gain-min=4 --vr-min=1.5 --size=200000   # 单组
+bun run scripts/backtest.ts --stop=atr                   # 止损口径写在命令行，不隐式跟 .env
+bun run scripts/backtest.ts --select=random              # 对照：因子排序 vs 乱选（reverse 也行）
+bun run scripts/backtest.ts --risk-gate=true             # 开风控闸，看资金曲线（注意会截断样本）
+bun run scripts/atr-sweep.ts                             # 止损机制对比 + 三门槛实量
+Invoke-RestMethod http://localhost:3005/stops            # 双口径反事实对照（每平一笔仓一条）
 bun run scripts/probe-latency.ts                         # 行情源往返与新鲜度
 bun run scripts/once.ts                                  # 只跑一轮，看链路
 ```
+
+口径约定：`--sweep` 与净期望相关的结论一律用**关风控闸**的数（测策略本身）；开闸只用来评估
+风控对资金曲线的保护，它会提前停手从而截断样本。`--size` / `CNY_BANKROLL` 改变成本量级
+（3300 元档往返 36.9bp 名义、实测 44.6bp），不同档的结果不可互相引用。
 
 `backtest.json` 里的 `trips` 是逐笔明细（建仓日、退出日、成交价、数量、净 bps、退出原因），
 可以直接审计"有没有当天买卖"这类问题。
@@ -174,10 +194,14 @@ bun run scripts/once.ts                                  # 只跑一轮，看链
 | 日志反复出现 `批量快照失败(1..3)` 然后横幅"已降级为日频" | 免费源限流或封 IP。等几分钟自动恢复不了就换网络；`eodOnly=true` 期间只有盘前一次信号 |
 | `日线三个源全部失败` | 东财熔断 + 腾讯/新浪也不通；`fetch-daily` 支持断点续跑（已下载的会跳过） |
 | 启动横幅 `日历退化` | 同上，日线拿不到。交易日判定不可靠，别信当天信号 |
-| 建议单为空但候选表有票 | 看闸门徽章与横幅；或 `MAX_DAILY_OPENS` / `K` 额度已用完 |
+| `[book] …发现快照与流水不平…已按流水重建` | 曾有双写/手改文件。现在每次落盘都会自检，`trades.jsonl` 是唯一事实；反复出现就查是不是两个引擎在跑 |
+| `[lock] 已有实例在运行` | 单实例锁拒了双开。要跑 `scripts/once.ts` 就直接用它（会自动改走 `POST /scan`），或先停掉服务 |
+| 写接口返回 401 | 非回环请求或陌生站点跨源，没带 `x-auth`。本地面板用 `?token=xxx` 传入口令 |
+| 建议单为空但候选表有票 | 看闸门徽章与横幅；或 `MAX_DAILY_OPENS` / `K` 额度已用完；或该标的已有在途单/已持仓（同一标的同方向只留一张） |
 | 持仓表"可卖 0、冻结 N" | 正常，T+1。当天买的必须明天才能卖 |
 | 收盘后 `行情延迟` 显示 `收盘 09/18` | 正常。盘中才会显示秒级新鲜度 |
-| 中文在终端里是乱码 | PowerShell 控制台是 GBK，而 Bun 输出 UTF-8。改用 `Get-Content <file> -Encoding utf8`，或直接读 `data/*.txt` |
+| 收盘后还有昨日建议单挂着 | 不会：隔日作废 + 收盘作废（当日单当日清） |
+| 中文在终端里是乱码 | PowerShell 控制台是 GBK，而 Bun 输出 UTF-8。先 `[Console]::OutputEncoding=[Text.Encoding]::UTF8`，或 `Get-Content <file> -Encoding utf8` |
 | `git log` / GitHub 上中文变 `?` | 用 UTF-8 文件传中文：`git commit -F msg.txt`；调 GitHub API 时把 body 转成 `[Text.Encoding]::UTF8.GetBytes($json)` 再发 |
 | 端口被占用 | `Get-NetTCPConnection -LocalPort 3005,3006 -State Listen` 反查 `OwningProcess` 后 `Stop-Process` |
 
@@ -191,4 +215,5 @@ Remove-Item data\cache -Recurse                        # 重新拉股票池
 Remove-Item data\llm -Recurse                          # 让 LLM 重新判断（当天缓存会复用）
 ```
 
-`data/daily/` 是回测数据，删了要重新下载（约 13 秒/100 支）。全部 `data/` 已被 gitignore。
+`data/daily/` 是回测数据，删了要重新下载（约 13 秒/100 支）。`data/` 整体被 gitignore，
+但结论证据 `sweep.tsv`、`backtest.txt/json`、`model.json` 是例外（它们入库才能被别人复核）。

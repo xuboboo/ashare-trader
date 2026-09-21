@@ -9,22 +9,26 @@
 它不自动下单 —— **交易时段全程决策**：09:05 盘前预选一次；09:30 起连续竞价时段每 `DECIDE_EVERY_MS`（默认 60s）做一轮买入决策；持仓退出（止损 / 高开减半 / 到点清仓）只要持仓可卖就每轮评估。组合级风控闸（日亏损 3% / 回撤 10%，可配）触及时自动停止开仓、不封退出。
 
 > **当前状态：策略未通过自己的回测门槛，停在回测层。**
-> 36 组参数全部净期望为负，最好的一组是 `毛利 +11bp − 成本 11.6bp = 净 −0.58bp`。
+> 294 支 × 801 个交易日的 36 组参数扫描全部净期望为负；默认那一组是
+> `毛利 -25.6bp - 成本 44.6bp = 净 -70.2bp（t = -3.78）`，最好的那一组也有 -28.8bp。
+> 并且新增了三个对照结论：因子排序**不优于乱选**（`--select=random/reverse`）、
+> ATR 止损只改善 6bp（它是把止损放宽了）、风控闸开着的数字“好看”只因为提前停手。
 > 代码是完整可跑的，结论是"这条 edge 不存在"。全部数据与推导见
-> [docs/STRATEGY.md](docs/STRATEGY.md)。
+> [docs/STRATEGY.md](docs/STRATEGY.md)（`data/sweep.tsv`、`data/backtest.txt`、`data/model.json` 已入库，可复核）。
 
 ## 三路决策模型
 
 | MODEL | 是什么 | 什么时候用 |
 | --- | --- | --- |
-| `factor`（默认） | 确定性规则打分，毫秒级，完全可回测 | 想要稳定出单、跑通全流程 |
+| `factor`（默认） | 确定性规则打分，毫秒级，完全可回测（但排序本身未证明有效，见 `--select=random` 对照） | 想要稳定出单、跑通全流程 |
 | `local` | 本地概率模型：`bun run train` 用本地日线 + 与回测同一条出场规则训练的逻辑回归，输出"扣成本后为正"的概率 | 想要概率化的排序与阈值；零 API、零费用、可复现 |
 | `jev` | TypeSafe System One 远端评估模型（需 `TYPESAFE_AI_API_KEY`，无 key 自动降级 factor） | 有 key 且愿意接受外部依赖 |
 
 `local` 的训练报告会如实写进 `data/model.json`（留出集 AUC、按阈值采纳后的净期望 bp）。
-以 2026-09 全池日线（295 支）训练的结果：留出集 AUC 0.532、0.55 阈值下 781 条留出样本 0 条采纳——
-**当前因子集对"隔夜+成本"口径没有可用的预测力**，与 docs/STRATEGY.md 的结论一致。
-要让它真的出单需要调低 `JEV_MIN_PROB`（例如 0.3，见面板"本地模型判定"），但请先读上面的数字。
+用修正后的样本（不丢一字跌停、只采闸门开的日子、逐笔算真实费用）重训的结果：
+留出集 **AUC 0.517**、正例率 0.431、全体平均净期望 -31.5bp；`JEV_MIN_PROB=0.55` 只采纳 9/283 笔、-49.4bp。
+**当前因子集对"隔夜+成本"口径没有可用的预测力**（修正前的 0.574 有一部分来自已修的样本截尾缺陷）。
+采纳规则也已改成看“校准后期望 > 0”而不是胜率阈值 —— 胜率赢不等于期望赢。
 
 ```
 # 训练与重训（每次抓完新日线后跑一次即可，完全确定性）
@@ -51,8 +55,8 @@ Jev 是 TypeSafe 在 2026-09-16 发布的 "System One 模型"：它不生成文�
 
 本项目的用法（`src/jev.ts`）：
 
-- 问的是**可判定的陈述**，不是"你怎么看这只票"：
-  *"在 14:45 以对手价买入 X，按规则于次日 10:00 前退出，扣除约 11.6bp 往返成本后本笔收益为正"*
+- 问的是**可判定的陈述**，不是"你怎么看这只票"（时间与成本从当前状态实时取，不写死）：
+  *"在 ${date} ${time} 以对手价买入 X，按规则于次日 10:00 前退出，扣除实测往返成本后这笔收益为正"*
 - 一次请求把最多 20 只候选一起问完（共享同一 state），boolean 返回的概率即该陈述为真的概率
 - 模型看到的 state 与规则层**同一份数据**（同一 `StockFeatures`、同一 `costs.ts` 口径），不给它任何额外字段，
   否则回测/实盘一致性就破了
@@ -79,8 +83,8 @@ bun run start
 ```powershell
 cd ashare-trader
 bun install
-Copy-Item .env.example .env      # 默认 PAPER=true、本金 15 万、单笔 5 万
-bun run start                    # 后端 http://localhost:3005
+Copy-Item .env.example .env      # 默认 PAPER=true、本金 15 万、单笔 5 万（小资金档见 .env.example 里的成本警告）
+bun run start                    # 后端 http://127.0.0.1:3005（默认只绑回环）
 
 cd web
 bun install
@@ -93,9 +97,11 @@ bun run dev                      # 仪表盘 http://localhost:3006
 三条验证命令：
 
 ```powershell
-bun test                                     # 72 pass / 0 fail
-bun run scripts/probe-latency.ts             # 各行情源的往返延迟与数据新鲜度
-bun run scripts/backtest.ts --from=2024-01-01 --sweep   # 36 组参数扫描
+bun test                                     # 164 pass / 0 fail（含契约测试、账本重放自洽、影子撮合闭环）
+bun run scripts/backtest.ts --stop=atr       # 单组：生产口径的净期望与 t 值
+bun run scripts/backtest.ts --select=random  # 对照：因子排序到底有没有信息量
+bun run scripts/backtest.ts --from=2024-01-01 --sweep   # 36 组参数扫描 → data/sweep.tsv
+bun run scripts/atr-sweep.ts                 # 止损口径对比 + 三门槛实量
 ```
 
 ## 日常怎么用
@@ -112,16 +118,20 @@ bun run scripts/backtest.ts --from=2024-01-01 --sweep   # 36 组参数扫描
 
 ## 接口
 
-只读：`GET /`（元信息 + 最新心跳）、`/history`、`/positions`、`/fills`、`/orders`、`/equity`（权益曲线）、`/broker`（QMT sidecar 状态）、`/events`（SSE）。
-写（只改本地账本，不产生任何委托）：
+只读：`GET /`（元信息 + 最新心跳）、`/history`、`/positions`、`/fills`、`/orders`、`/equity`（权益曲线）、`/stops`（止损口径的双口径反事实对照）、`/broker`（QMT sidecar 状态）、`/events`（SSE）。
+写（改本地账本；除 `/broker/order` 外不产生任何委托）：
 
 | 方法 | 作用 | 备注 |
 | --- | --- | --- |
-| `POST /scan` | 立即跑一次选股 | 收盘后也能跑（复盘），但**不会伪造成交** |
-| `POST /fill` | 回填一笔真实成交 | `{code, side, qty, price?, signalId?, note?}` |
+| `POST /scan` | 立即跑一次选股 | 收盘后也能跑（复盘），但不会伪造成交（当日单收盘作废） |
+| `POST /fill` | 回填一笔真实成交 | `{code, side, qty, price?, signalId?, note?}`；沿用它对应建议单的止损线 |
 | `POST /fill/remove` | 撤销一笔误回填 | `{id}`；重放剩下的成交，原流水进 `data/voids.log` |
 | `POST /reset` | 清空账本 | 必须带 `{"confirm":"CLEAR"}`；旧 `trades.jsonl`/`positions.json` 先归档 |
-| `POST /broker/order` | 把一张在途建议单推给 QMT sidecar | 必须带 `{"signalId":"...","confirm":"SUBMIT"}`；sidecar 处于 `mock`/`dry` 时只记录不下单，`live` 前置条件见 `docs/COMPLIANCE.md` |
+| `POST /broker/order` | 把一张在途建议单推给 QMT sidecar | 必须带 `{"signalId":"...","confirm":"SUBMIT"}`；**同一 signalId 幂等**，重推需显式 `force:true`；sidecar 处于 `mock`/`dry` 时只记录不下单，`live` 前置条件见 `docs/COMPLIANCE.md` |
+
+**写接口的权限**：默认只监听 `127.0.0.1`；非回环请求、或来路是陌生站点的浏览器跨源请求，
+必须带 `x-auth: <API_TOKEN>`（面板用 `?token=xxx` 传）。原因：同一个面板上有“清空账本”
+与“推给券商”两个按钮，绑 0.0.0.0 且无口令 = 局域网里任何设备（甚至你开着的一个网页）都能清你的账本。
 
 ## 文档
 
@@ -138,24 +148,27 @@ bun run scripts/backtest.ts --from=2024-01-01 --sweep   # 36 组参数扫描
 
 ```
 src/
-  config.ts     全部参数（含成本与因子阈值）
+  config.ts     全部参数（含成本与因子阈值、监听地址、写接口口令）
   http.ts       限流行情 HTTP（3 req/s、单 URL 1s 去重、退避带抖动）
-  session.ts    时段状态机 + 北京时间（不依赖本机时区）
+  session.ts    时段状态机 + 北京时间 + 累计交易分钟（闸门节奏用）
   calendar.ts   交易日历：读上证日线，不内置节假日表
   quotes.ts     快照(腾讯 GBK 五档) / 榜单(东财) / 日线(东财→腾讯→新浪) / 涨停池
-  symbols.ts    A 股规则：板别涨跌幅、涨跌停价四舍五入、100 股一手
+  symbols.ts    A 股规则：板别涨跌幅、涨跌停价四舍五入、100 股一手、整手减半
   costs.ts      佣金 max(5, 0.025%)、印花税卖出单边、过户、经手证管、滑点
   factors.ts    因子打分 + 大盘闸门；日线口径与快照口径共用同一个 scoreStock
+  exit.ts       止损价与次日出场阶梯（回测、训练、实盘共用这一份规则）
   model.ts      FactorModel（默认，毫秒级）+ LlmAdvisory（仅日频：情绪闸门 + 个股 veto）
   jev.ts        JevModel：TypeSafe System One 模型接入，逐只候选问 boolean，失败自动降级
-  orders.ts     建议单生成 + 纸面撮合（观测价成交、限价钳制、一字板不成交）
-  state.ts      Book：T+1 可卖/冻结、费用按比例结转、权益曲线、rebuild 重放、JSON 持久化
-  engine.ts     主循环：单轮在途、三个调度点、新鲜度门控、心跳事件
-  server.ts     Bun.serve：/ /history /positions /fills /orders /scan /fill /fill/remove /reset /events(SSE)
-scripts/        once · probe · probe-latency · fetch-daily · backtest · fill
-test/           9 个文件 72 个用例（含契约测试、回测/实盘一致性、账本重放自洽、Jev 接入与降级）
+  local.ts      LocalModel：本地逻辑回归，按“校准后期望>0”采纳，无 model.json 降级 factor
+  orders.ts     建议单生成 + 纸面撮合 settlePending（对手价成交、限价钳制、当日有效、买卖双向）
+  state.ts      Book：T+1 可卖/冻结、费用按比例结转、止损线随成交落账、权益曲线、rebuild 重放
+  lock.ts       账本单实例锁（index.ts / once.ts / fill.ts 共用）
+  engine.ts     主循环：单轮在途、新鲜度门控、退出与买入、影子撮合、心跳事件
+  server.ts     Bun.serve：/ /history /positions /fills /orders /equity /scan /fill /reset /broker /events(SSE)
+scripts/        once · probe · probe-latency · fetch-daily · backtest · atr-sweep · train-model · fill
+test/           18 个文件 164 个用例（契约、账本重放自洽、影子撮合闭环、回测与实盘同构、写权限）
 web/            Next.js 仪表盘
-data/           本地账本、日线、回测产物（全部 gitignore）
+data/           本地账本与日线（忽略）；结论证据 sweep.tsv / backtest.* / model.json 入库
 ```
 
 ## 为什么是日频，不是高频
@@ -167,20 +180,28 @@ A 股个股上做不了高频挂撤单吃价差，四条约束叠加：
 | T+1 | 当日买入不可卖 → 隔夜跳空风险无法回避，止损不是万能保护 |
 | 涨跌停与停牌 | 一字涨停买不进、一字跌停卖不出；停牌期间只能拿着 |
 | 程序化交易报备 | 现行高频认定线为单账户每秒申报/撤单合计 ≥300 笔或单日 ≥2 万笔（2026 年流传的"降到每秒 15 笔"不在任何条文中，已辟谣） |
-| 成本结构 | 5 元最低佣金 + 印花税把零售往返成本钉在 **11.6bp** 附近；加大单笔金额也降不下来，超过 20 万后成本由比例费主导 |
+| 成本结构 | 5 元最低佣金 + 印花税：2 万以上是 **11.6bp** 的地板，加大金额也降不下来；但往下走会急剧变坏 —— 3300 元档名义 36.9bp、回测实测 44.6bp（`test/costs.test.ts` 钉住） |
 
 所以本项目的定位是**日频决策 + 人工执行 + 严格记账**，不是低延迟交易机。
 行情侧同理：用的是 L1 三秒快照，没有逐笔与委托队列（见 [docs/DATA.md](docs/DATA.md)）。
 
 ## 已知缺陷（写在这里，不让它藏在代码注释里）
 
-- **选择偏差**：回测股票池是"今天"的成交额前 100，它们过去两年本来就更可能强势
-- **日线近似**：`次日 10:00 前清仓` 用收盘价代理；止损按当日最低价触及判定
-- **成交额估算**：东财日线被限流时改走腾讯/新浪，那两源没有成交额字段，
-  用 `(高+低+收)/3 × 成交量` 估算并打 `amountEst` 标记（当前样本 31/99 支），
-  影响 2 亿流动性门槛与 VWAP 因子
-- **回测与实时撮合口径不完全一致**：实时路径用下一轮观测价 ± 滑点，回测用收盘价。
-  要消除这个差异需要分钟线或券商委托回报
+实现层的缺陷已在 2026-09-21 审计中修完并列在 [docs/STRATEGY.md](docs/STRATEGY.md) 末尾（逐条带测试）。
+剩下的都是数据与口径给的：
+
+- **选择偏差**：回测股票池是"今天"的成交额前 N，它们过去两年本来就更可能强势
+- **日线近似**：`次日 10:00 前清仓` 用收盘价代理；止损按当日最低价触及判定；
+  实盘的 VWAP 弱势离场在回测里根本不存在
+- **入场时刻不同构**：回测是 14:45 尾盘，实盘从 09:30 起全程可能出单 ——
+  尾盘回测的结论不能为盘中入场背书
+- **因子排序未证明有效**：`--select=reverse`（取分数最低的）反而比 `score` 好 16bp，
+  `random` 介于两者之间。不要把它当 alpha
+- **成交额与换手估算**：126/294 支走腾讯/新浪回退源，那两源没有成交额也没有换手率，
+  成交额用 `(高+低+收)/3 × 成交量` 估算、换手直接为 0 → 同一个打分函数在不同源下不可比
+- **回测与实时撮合口径不完全一致**：实时路径用下一轮对手价（并被限价钳住），回测用收盘价
+
+要消除这些差异需要分钟线或券商委托回报。
 
 ## 免责声明
 
