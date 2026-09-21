@@ -72,6 +72,8 @@ export interface SuggestedOrder {
 export interface Decision {
   action: Action;
   probabilities: Record<Action, number>;
+  /** probabilities 的语义：rank-share = 排序占比（不是概率！）；calibrated/model-prompt 才是概率 */
+  probabilitySemantics?: "rank-share" | "calibrated" | "model-prompt";
   picks: { code: string; name: string; probability: number; score: number; reasons: string[] }[];
   latencyMs: number;
   late: boolean;
@@ -116,7 +118,7 @@ export interface TickEvent {
   tradingDay: boolean;
   trigger: string;
   index: { price: number; pct: number; amountYi: number; ma5: number | null };
-  gate: { allowed: boolean; reasons: string[] };
+  gate: { allowed: boolean; reasons: string[]; status?: "open" | "closed" | "idle"; skipped?: string[] };
   bias: {
     emotionScore: number;
     allowOpen: boolean;

@@ -204,6 +204,8 @@ export class JevModel implements Model {
     return {
       action: picks.length ? "buy" : "hold",
       probabilities,
+      // 这是远端模型对"扣成本后为正"这个可判定陈述给出的概率，本项目无法验证它的校准质量
+      probabilitySemantics: "model-prompt",
       picks,
       latencyMs: performance.now() - t0,
       late: false,

@@ -62,6 +62,10 @@ export interface LocalWeights {
   /** 训练元信息，如实透出给使用者 */
   trainedAt: string;
   costBps: number;
+  /** 训练时的止损口径与入场时刻：与实盘不一致时模型概率不适用 */
+  stopMode?: string;
+  entryAt?: string;
+  sizeCny?: number;
   featureNames: string[];
   mean: number[];
   std: number[];
@@ -78,6 +82,11 @@ export interface LocalWeights {
     valAcceptedNetBps: number | null;
     valAcceptedCount: number;
     valMinProb: number;
+    /** 出场被卡死（一字跌停/停牌）按强平定价的样本占比：真实无法按规则出场的频率 */
+    censoredShare?: number;
+    /** 按“校准期望>0”采纳的条数与平均净期望：真正该看的决策准则 */
+    valAcceptedByEvCount?: number;
+    valAcceptedByEvBps?: number | null;
     /** 阈值扫描：各阈值下的采纳数与平均净期望，用于选择 JEV_MIN_PROB */
     thresholdSweep?: { p: number; n: number; netBps: number | null }[];
     /** 概率校准桶：预测概率 -> 实际频率与桶内平均净期望（EV 估计的原始数据） */
@@ -187,6 +196,20 @@ export class LocalModel implements Model {
         }
       : undefined;
 
+    /**
+     * 采纳准则：有校准表就用“校准后期望 > 0”，没校准表才退回 P(赢) ≥ minProb。
+     * 拿胜率过阈当买入条件是错的：止损剪掉上行尾部，胜率赢不等于期望赢；
+     * 而训练报告里已经落盘了每个概率桶的平均净期望，不用它没道理。
+     */
+    const hasCal = (w.metrics.calibration?.length ?? 0) > 0;
+    const accept = (p: number, ww: LocalWeights): boolean => {
+      if (hasCal) {
+        const ev = this.evEstimate(p, ww);
+        if (ev !== null) return ev > 0;
+      }
+      return p >= this.minProb;
+    };
+
     const probs = new Map<string, number>();
     for (const c of list) {
       const p = probability(featureVec(c, m), w);
@@ -199,7 +222,7 @@ export class LocalModel implements Model {
     }
 
     const picks: Pick[] = list
-      .filter((c) => (probs.get(c.features.code) ?? 0) >= this.minProb)
+      .filter((c) => accept((probs.get(c.features.code) ?? 0), w))
       .sort((a, b) => (probs.get(b.features.code) ?? 0) - (probs.get(a.features.code) ?? 0))
       .slice(0, Math.min(s.openSlots, config.k))
       .map((c) => {
@@ -219,6 +242,7 @@ export class LocalModel implements Model {
     return {
       action: picks.length ? "buy" : "hold",
       probabilities: { buy: picks.length ? best : 0, sell: 0, hold: picks.length ? 1 - best : 1 },
+      probabilitySemantics: "calibrated",
       picks,
       latencyMs: performance.now() - t0,
       late: false,

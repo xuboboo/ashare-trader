@@ -2,13 +2,16 @@
 
 import { useEffect, useState } from "react";
 import { fmtCny, fmtInt, fmtPrice } from "@/lib/format";
-import { API_URL } from "@/lib/useFeed";
+import { API_TOKEN, API_URL } from "@/lib/useFeed";
 import type { Fill, Totals } from "@/lib/types";
 
 async function post<T>(path: string, body?: unknown): Promise<T> {
   const r = await fetch(`${API_URL}${path}`, {
     method: "POST",
-    headers: body === undefined ? {} : { "content-type": "application/json" },
+    headers: {
+      ...(body === undefined ? {} : { "content-type": "application/json" }),
+      ...(API_TOKEN ? { "x-auth": API_TOKEN } : {}),
+    },
     body: body === undefined ? undefined : JSON.stringify(body),
     signal: AbortSignal.timeout(20_000),
   });

@@ -42,6 +42,8 @@ export default function DecisionPanel({ event, history, latest, meta, nowMs }: P
   const action = d?.action ?? null;
   const degraded = d?.modelFailed ?? false;
   const probs = d?.probabilities ?? { buy: 0, sell: 0, hold: 0 };
+  // 规则层的 probabilities 是打分离 softmax，有 picks 时 buy 恒为 100% —— 那不是胜率，必须标出来
+  const rankShare = (d?.probabilitySemantics ?? "rank-share") === "rank-share";
 
   const headline =
     action === "buy" ? "买入" : action === "sell" ? "卖出" : d ? "观望" : "等待";
@@ -110,12 +112,23 @@ export default function DecisionPanel({ event, history, latest, meta, nowMs }: P
       />
       <BarRow label="卖出" active={action === "sell"} value={probs.sell} fill="var(--down)" pct={d ? fmtPct(probs.sell * 100, 0) : DASH} />
 
+      {/* 概率语义：别让“100% 买入”冒充胜率 */}
+      <div className="muted tiny" style={{ marginTop: 6 }}>
+        {rankShare
+          ? "上面是候选间的排序占比（规则层无概率含义），不是胜算"
+          : `上面是模型判定的“扣成本后为正”概率（${d?.probabilitySemantics === "calibrated" ? "本地模型，带训练集校准" : "Jev 远端判定，校准未独立验证"}）`}
+      </div>
+
       <div className="muted tiny" style={{ marginTop: 8 }}>
-        {latest?.gate.allowed
-          ? `闸门开 · ${latest.gate.reasons[0] ?? ""}`
-          : latest
-            ? `闸门关 · ${latest.gate.reasons.join("；")}`
-            : "闸门未知"}
+        {!latest
+          ? "闸门未知"
+          : latest.gate.status === "idle"
+            ? `闸门待命 · ${latest.gate.reasons.at(-1) ?? "不在交易窗口"}` // 最后一条就是时效说明
+            : latest.gate.allowed
+              ? `闸门开 · ${latest.gate.reasons[0] ?? ""}${
+                  latest.gate.skipped?.length ? ` · 本轮未评估：${latest.gate.skipped.join("、")}` : ""
+                }`
+              : `闸门关 · ${latest.gate.reasons.join("；")}`}
         {degraded ? " · 模型本轮失败，按规则层执行" : ""}
       </div>
 

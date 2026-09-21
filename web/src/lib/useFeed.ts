@@ -26,6 +26,13 @@ export const API_URL = (() => {
   return /^https?:\/\//.test(raw) ? raw : "http://localhost:3005";
 })();
 
+/**
+ * 写接口口令：后端 API_HOST 绑到非回环地址（局域网/隧道）时，任何 POST 都要带 x-auth。
+ * 从 URL 的 ?token= 读（只存在于当前页面会话，不会进构建产物）。
+ */
+export const API_TOKEN =
+  typeof window !== "undefined" ? (new URLSearchParams(window.location.search).get("token") ?? "") : "";
+
 const CAP = 1000;
 const BACKOFF_MIN = 1000;
 const BACKOFF_MAX = 10_000;
@@ -212,7 +219,10 @@ export function useApi() {
       try {
         const r = await fetch(`${API_URL}${path}`, {
           method,
-          headers: body === undefined ? {} : { "content-type": "application/json" },
+          headers: {
+            ...(body === undefined ? {} : { "content-type": "application/json" }),
+            ...(API_TOKEN ? { "x-auth": API_TOKEN } : {}),
+          },
           body: body === undefined ? undefined : JSON.stringify(body),
           signal: AbortSignal.timeout(20_000),
         });

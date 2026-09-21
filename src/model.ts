@@ -40,6 +40,14 @@ export interface SignalState {
 export interface Decision {
   action: Action;
   probabilities: Record<Action, number>;
+  /**
+   * probabilities 到底是什么：
+   *  - "rank-share"：FactorModel 把打分离 softmax 归一，它是排序占比，不是概率；
+   *    拿着它当"55% 胜率"看就是误导（面板上必须标清楚）；
+   *  - "calibrated"：本地模型输出的 P(扣成本后为正)，带训练集的校准表；
+   *  - "model-prompt"：Jev 返回的结构化判定概率，校准质量由外部模型保证（本项目无法验证）。
+   */
+  probabilitySemantics?: "rank-share" | "calibrated" | "model-prompt";
   picks: Pick[];
   latencyMs: number;
   /** 本轮模型没赶上/没出结果；规则层恒为 false，字段留给未来的盘中模型 */
@@ -100,6 +108,9 @@ export class FactorModel implements Model {
     return {
       action: picks.length ? "buy" : "hold",
       probabilities,
+      // 有 picks 时 buy 的 softmax 归一后恒为 1：这不是“100% 看涨”，而是“本轮回给了这几只”。
+      // 语义必须随结论一起下发，由面板标出来。
+      probabilitySemantics: "rank-share",
       picks,
       latencyMs: performance.now() - t0,
       late: false,
