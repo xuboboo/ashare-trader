@@ -15,6 +15,7 @@ const base = {
   preBuyDone: false,
   lastBuyMs: 0,
   nowMs: 1_000_000,
+  codesChanged: false,
 };
 
 describe("买入决策调度（盘前预选 + 全程节奏）", () => {
@@ -50,6 +51,16 @@ describe("买入决策调度（盘前预选 + 全程节奏）", () => {
     expect(buyDecisionDue({ ...base, scoredCount: 0 })).toBe(false);
     expect(buyDecisionDue({ ...base, trading: false })).toBe(false);
     expect(buyDecisionDue({ ...base, trading: false, force: true })).toBe(true);
+  });
+
+  test("候选集变化（新票进区间）→ 15 秒内立即响应，不受 60 秒节奏限制", () => {
+    const ran = { ...base, lastBuyMs: 1_000_000 };
+    // 20 秒前刚决策过，但有新票冲进区间 → "看情况"立即再决策
+    expect(buyDecisionDue({ ...ran, codesChanged: true, nowMs: ran.lastBuyMs + 20_000 })).toBe(true);
+    // 候选集没变 → 仍守 60 秒节奏
+    expect(buyDecisionDue({ ...ran, codesChanged: false, nowMs: ran.lastBuyMs + 20_000 })).toBe(false);
+    // 事件触发也有 15 秒下限，防 API 哄抢
+    expect(buyDecisionDue({ ...ran, codesChanged: true, nowMs: ran.lastBuyMs + 5_000 })).toBe(false);
   });
 
   test("force 无视一切节奏（手动 /scan 随时可看一轮决策）", () => {

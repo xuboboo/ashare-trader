@@ -22,7 +22,7 @@ import { fetchIndexDaily, fetchIndex, fetchZtPool, fetchSnapshots, quoteAgeSec, 
 import { riskBrake, type RiskBrake } from "./risk";
 import { bj, canTrade, hhmmOf, liveQuotes, phaseOf, type Phase, sessionNow, tradingElapsedMin } from "./session";
 import { Book, makeFill, round2, writeFileAtomic, type Fill } from "./state";
-import { lotAwareHalfQty } from "./symbols";
+import { cannotAffordLot, lotAwareHalfQty } from "./symbols";
 import { Universe } from "./universe";
 
 /** 决策用的一刻：日期、时间、当日分钟数 */
@@ -106,6 +106,8 @@ export class Engine {
   private preBuyDate = "";
   /** 上一次盘中买入决策时刻（epoch ms），配合 DECIDE_EVERY_MS 控制节奏 */
   private lastBuyMs = 0;
+  /** 上一轮的可买候选代码集（事件触发的比较基准） */
+  private lastEligibleKey = "";
   /** 上一次 eodOnly 恢复探测时刻 */
   private lastEodProbeMs = 0;
   /** 个股 ATR₁₄（STOP_MODE=atr 用），init 与每日日切时各加载一次 */
@@ -410,6 +412,14 @@ export class Engine {
       }
 
       const nowMs = Date.now();
+      // 可买候选集（过硬筛选+买得起）的代码集：与上轮比较，"看情况冲"的事件源
+      const codesKey = scored
+        .filter((c) => c.rejects.length === 0 && c.score > 0 && !cannotAffordLot(c.features.price, config.sizeCny))
+        .map((c) => c.features.code)
+        .sort()
+        .join(",");
+      const codesChanged = codesKey !== this.lastEligibleKey;
+      this.lastEligibleKey = codesKey;
       if (
         buyDecisionDue({
           force,
@@ -421,6 +431,7 @@ export class Engine {
           preBuyDone: this.preBuyDate === clock.date,
           lastBuyMs: this.lastBuyMs,
           nowMs,
+          codesChanged,
         })
       ) {
         decision = await this.decide(clock, scored, gate, "buy");
@@ -997,6 +1008,8 @@ export function buyDecisionDue(a: {
   preBuyDone: boolean;
   lastBuyMs: number;
   nowMs: number;
+  /** 通过硬筛选的可买候选集是否变化（新票进/出区间）→ 15 秒内立即响应 */
+  codesChanged: boolean;
 }): boolean {
   if (a.scoredCount <= 0) return false;
   if (a.force) return true;
@@ -1006,6 +1019,8 @@ export function buyDecisionDue(a: {
   if (preMarket) return !a.preBuyDone;
   // 开盘稳定期：连续竞价开始后的前 OPEN_DELAY_MIN 分钟不开新仓（退出管理照常）
   if (a.minutes < config.session.morningStart + config.openDelayMin) return false;
+  // 事件触发：可买候选集一变化就在 15 秒内响应（"看情况冲"）；否则按常规节奏
+  if (a.codesChanged && a.nowMs - a.lastBuyMs >= 15_000) return true;
   return a.liveNow && a.usable && a.nowMs - a.lastBuyMs >= config.decideEveryMs;
 }
 
