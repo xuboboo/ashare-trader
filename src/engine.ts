@@ -18,7 +18,7 @@ import { FactorModel, type Decision, type DailyBias, type Model, type SignalStat
 import { JevModel } from "./jev";
 import { LocalModel } from "./local";
 import { SellAdvisor, type SellAdvice, type SellAssistInput } from "./sell-assist";
-import { cancelStaleSells, makeBuyOrder, makeExitOrder, restingKey, restingKeys, settlePending, type Clock, type SuggestedOrder } from "./orders";
+import { availableCash, cancelStaleSells, makeBuyOrder, makeExitOrder, restingKey, restingKeys, settlePending, type Clock, type SuggestedOrder } from "./orders";
 import { fetchIndexDaily, fetchIndex, fetchZtPool, fetchSnapshots, quoteAgeSec, type DailyBar, type Snapshot } from "./quotes";
 import { riskBrake, type RiskBrake } from "./risk";
 import { bj, canTrade, hhmmOf, liveQuotes, phaseOf, type Phase, sessionNow, tradingElapsedMin } from "./session";
@@ -603,8 +603,9 @@ export class Engine {
             const vetoReason = this.bias?.vetoes[s.features.code];
             const order = makeBuyOrder(s, clock, vetoReason, config.sizeCny, this.atrMap.get(s.features.code));
             if (!order) continue;
-            // 现金闸：建议金额超过可用现金就不出单（与回测同口径），账本不允许被买穿成负数
-            if (order.amountCny + 50 > this.book.cash) continue;
+            // 资金闸：按"可用资金"判断（现金减去在途买单冻结占用，与券商同口径），
+            // 账本不允许被买穿成负数 —— 多张在途单不能再共用同一笔现金
+            if (order.amountCny + 50 > availableCash(this.book.cash, this.pending)) continue;
             newOrders.push(order);
             buysThisRound++;
             resting.add(restingKey(order));

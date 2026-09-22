@@ -176,6 +176,26 @@ export function rejectOrder(order: SuggestedOrder, why: string): SuggestedOrder 
 }
 
 /**
+ * 可用资金：现金减去全部在途买单冻结的估算占用。
+ *
+ * 真实券商在**下单那一刻**就冻结资金（可用资金减少），不是等成交 —— 否则多张
+ * 在途买单共用同一笔现金，全部成交时账户买穿（本项目真实发生过 -191.8 事故）。
+ * 冻结额 = 限价参考金额 × 剩余比例 + 按比例的买入费用估算；部分成交后按剩余
+ * 股数折算。成交时按实际成交额与真实费用扣款（冻结只是闸门，不是账）。
+ * 撤单/作废/全成后订单离开 pending，冻结自动解除 —— 派生值，零状态、重放安全。
+ */
+export function availableCash(cash: number, pending: Map<string, SuggestedOrder>): number {
+  let frozen = 0;
+  for (const o of pending.values()) {
+    if (o.side !== "buy" || o.status !== "pending" || o.amountCny <= 0) continue;
+    const remaining = o.qty + (o.filledQty ?? 0);
+    const estAmount = remaining > 0 ? (o.amountCny * o.qty) / remaining : o.amountCny;
+    frozen += estAmount + buyCosts(estAmount).total;
+  }
+  return round2(cash - frozen);
+}
+
+/**
  * 死单改价：市价连续跌穿在途卖单限价下沿 rounds 轮就撤掉这张单。
  *
  * 真人不会让一张永远成交不了的委托占着卖坑 —— 本系统同一标的同时只允许一张

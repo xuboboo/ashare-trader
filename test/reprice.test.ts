@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { cancelStaleSells, makeExitOrder } from "../src/orders";
+import { availableCash, cancelStaleSells, makeExitOrder, type SuggestedOrder } from "../src/orders";
 import type { Position } from "../src/state";
 import { Book, makeFill } from "../src/state";
 import { mkSnap } from "./helpers";
@@ -159,5 +159,51 @@ describe("成交流水带盈亏口径", () => {
     expect(f.realizedPnl).toBeDefined();
     // 盈亏比例 = 已实现盈亏 / (成本价 × 数量)
     expect(f.realizedPnlPct).toBeCloseTo((f.realizedPnl! / 2000) * 100, 2);
+  });
+});
+
+describe("可用资金冻结（与券商同口径）", () => {
+  const buyOrder = (amountCny: number, qty = 200, filledQty = 0): SuggestedOrder =>
+    ({
+      side: "buy",
+      status: "pending",
+      amountCny,
+      qty,
+      filledQty,
+    }) as never;
+
+  test("在途买单冻结资金：可用 < 现金，且冻结额含买入费用估算", () => {
+    const pending = new Map([["s1", buyOrder(3000)]]);
+    const avail = availableCash(10_000, pending);
+    expect(avail).toBeLessThan(7000); // 3000 + 费用
+    expect(avail).toBeGreaterThan(6900);
+  });
+
+  test("两张在途买单不能共用同一笔现金 —— 第二张会被资金闸挡住", () => {
+    const pending = new Map([
+      ["s1", buyOrder(4000)],
+      ["s2", buyOrder(4000)],
+    ]);
+    // 现金 7500：冻结两张 ≈ 8000+费用 → 可用 < 4000，第二张 4000 的单下不出去
+    expect(availableCash(7500, pending)).toBeLessThan(4000);
+  });
+
+  test("部分成交后按剩余股数折算冻结额", () => {
+    const pending = new Map([["s1", buyOrder(3000, 200, 100)]]);
+    // 剩余一半 → 估算金额 2000；触发 5 元最低佣金 + 0.16 其他费用 → 冻结 2005.16
+    const avail = availableCash(10_000, pending);
+    expect(avail).toBeGreaterThan(7994);
+    expect(avail).toBeLessThan(7996);
+  });
+
+  test("撤单/全成离开 pending 即自动解冻（派生值零状态）", () => {
+    const pending = new Map([["s1", buyOrder(3000)]]);
+    pending.delete("s1");
+    expect(availableCash(10_000, pending)).toBe(10_000);
+  });
+
+  test("卖单不占用资金", () => {
+    const sell = { ...buyOrder(3000), side: "sell" as const };
+    expect(availableCash(10_000, new Map([["s1", sell]]))).toBe(10_000);
   });
 });
