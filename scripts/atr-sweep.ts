@@ -14,7 +14,9 @@ import { loadStocks, simulate } from "./backtest";
 import { config } from "../src/config";
 import { roundTrip } from "../src/costs";
 import { fetchIndexDaily } from "../src/quotes";
+import { assertResearchReady } from "../src/research";
 
+await assertResearchReady();
 const stocks = await loadStocks();
 const indexBars = await fetchIndexDaily(800);
 if (stocks.length < 10) {

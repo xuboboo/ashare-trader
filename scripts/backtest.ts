@@ -25,6 +25,7 @@ import { riskBrake } from "../src/risk";
 import { Book, makeFill, round2 } from "../src/state";
 import { inScope, limitPct } from "../src/symbols";
 import { hhmmOf, tradingElapsedMin } from "../src/session";
+import { assertResearchReady } from "../src/research";
 
 /** 回测模拟的入场时刻：尾盘下单。闸门的时间折算与成交时间都用它，不再写死两处。 */
 const ENTRY_AT = hhmm("14:45", 885);
@@ -616,6 +617,17 @@ function emptyResult(params: string, bankrollCny = config.bankrollCny): BtResult
 }
 
 async function main() {
+  try {
+    await assertResearchReady();
+  } catch (e) {
+    console.error(String((e as Error).message));
+    process.exitCode = 2;
+    return;
+  }
+  console.error("旧日线回测已停用；研究数据协议通过后必须使用分钟级研究 runner。");
+  process.exitCode = 2;
+  return;
+
   const args = parseArgs(process.argv.slice(2));
   if (!args.sweep) {
     const { result, log } = await runBacktest(args);

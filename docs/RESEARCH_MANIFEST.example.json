@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "dataset": "ashare-research-v1",
+  "timezone": "Asia/Shanghai",
+  "priceBasis": "raw",
+  "universe": {
+    "path": "universe",
+    "format": "date-json",
+    "pointInTime": true,
+    "source": "licensed-or-versioned-provider"
+  },
+  "daily": {
+    "path": "daily-raw",
+    "format": "code-json",
+    "pointInTime": true,
+    "source": "licensed-or-versioned-provider"
+  },
+  "minutes": {
+    "path": "minutes-1m",
+    "format": "date-code-json",
+    "intervalMinutes": 1,
+    "source": "licensed-or-versioned-provider"
+  },
+  "execution": {
+    "entryTime": "14:45",
+    "exitDeadline": "10:00",
+    "entryPrice": "ask",
+    "exitPrice": "bid",
+    "maxBarAgeSeconds": 60
+  },
+  "splits": {
+    "train": { "from": "2019-01-01", "to": "2023-12-31" },
+    "validation": { "from": "2024-01-01", "to": "2024-12-31" },
+    "test": { "from": "2025-01-01", "to": "2026-09-30" }
+  }
+}

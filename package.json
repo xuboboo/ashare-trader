@@ -9,6 +9,8 @@
     "start": "bun run src/index.ts",
     "dev": "bun --watch run src/index.ts",
     "fetch:daily": "bun run scripts/fetch-daily.ts",
+    "research:check": "bun run scripts/research-readiness.ts",
+    "research:backtest": "bun run scripts/research-backtest.ts",
     "train": "bun run scripts/train-model.ts",
     "backtest": "bun run scripts/backtest.ts",
     "fill": "bun run scripts/fill.ts",

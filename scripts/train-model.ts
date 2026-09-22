@@ -23,6 +23,9 @@ import { fetchIndexDaily, type DailyBar } from "../src/quotes";
 import { tradingElapsedMin } from "../src/session";
 import { limitPct } from "../src/symbols";
 import { loadStocks } from "./backtest";
+import { assertResearchReady } from "../src/research";
+
+await assertResearchReady();
 
 /** 与回测同一个模拟入场时刻（尾盘），闸门的时间折算也用这个点 */
 const ENTRY_AT = hhmm("14:45", 885);
