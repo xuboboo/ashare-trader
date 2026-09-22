@@ -44,6 +44,9 @@ export const config = {
   sizeCny: num("SIZE_CNY", 50_000),
   k: num("K", 3),
   maxDailyOpens: num("MAX_DAILY_OPENS", 4),
+  /** 每个决策轮最多执行几个新买入（默认 1）：一轮评估出的多个 pick 不再同轮齐买，
+   *  后续入场必须由模型在下一轮用新鲜行情重新确认 —— 真人不会同一分钟无脑买三只。 */
+  maxBuysPerRound: num("MAX_BUYS_PER_ROUND", 1),
   stopLossPct: num("STOP_LOSS_PCT", 3),
   /** 止损模式：fixed = 固定百分比；atr = 买入价 − ATR_K×ATR₁₄（封底买入价×90%）。
    *  ATR 缺失/过期的股票自动回退 fixed。回测门槛通过后才建议切 atr。 */

@@ -588,7 +588,12 @@ export class Engine {
           // 只有行情可用的窗口里才把单注册成在途单；否则 force（收盘后 /scan）只是
           // 复盘用的“本轮观点”，不能直接进 pending —— 不然面板上会看到一弹出单然后被作废。
           const register = trading && liveQuotes(phase) && usable;
+          // 每轮最多执行 maxBuysPerRound 个新买入（默认 1）：picks 按置信度排序，
+          // 只执行最前面的那个；其余的要等下一轮模型用新鲜行情重新确认。
+          // 真人不会同一分钟无脑连买三只 —— 每笔入场都该是当下独立确认的判断。
+          let buysThisRound = 0;
           for (const pick of decision?.picks ?? []) {
+            if (buysThisRound >= config.maxBuysPerRound) break;
             const s = scored.find((x) => x.features.code === pick.code);
             if (!s) continue;
             // 同一标的同时只留一张在途买单：决策每 60s 一轮，不去重就会把同一只股堆成几仓
@@ -601,6 +606,7 @@ export class Engine {
             // 现金闸：建议金额超过可用现金就不出单（与回测同口径），账本不允许被买穿成负数
             if (order.amountCny + 50 > this.book.cash) continue;
             newOrders.push(order);
+            buysThisRound++;
             resting.add(restingKey(order));
             if (register) this.pending.set(order.signalId, order);
           }
