@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { pxOffsetPctOf, SellAdvisor, type SellAnswer, type SellAssistAsk, type SellAssistInput } from "../src/sell-assist";
+import { pxOffsetPctOf, SellAdvisor, type SellAnswer, type SellAssistInput } from "../src/sell-assist";
 
 const pos = (code: string, unrealizedPct: number): SellAssistInput => ({
   code,

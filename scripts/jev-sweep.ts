@@ -7,7 +7,7 @@
  */
 import { join } from "node:path";
 import { config } from "../src/config";
-import { researchRoot, loadDailyBars, dateInRange, type ResearchDailyBar, type ResearchManifest, type ResearchSplitName } from "../src/research";
+import { researchRoot, loadDailyBars, dateInRange, type ResearchDailyBar, type ResearchManifest } from "../src/research";
 import { defaultFactorParams, featuresFromDaily, scoreStock, type Scored } from "../src/factors";
 import { roundTrip } from "../src/costs";
 import { buildState, buildQuestions, defaultAsk, eligible } from "../src/jev";
@@ -24,7 +24,6 @@ const DAYS = argNum("days", 260);
 const CONC = argNum("conc", 8);
 const HOLDS = [3, 5, 10];
 const THRS = [0.4, 0.45, 0.5, 0.55];
-const MAXH = Math.max(...HOLDS);
 
 const root = researchRoot(config.dataDir);
 const manifest = (await Bun.file(join(root, "manifest.json")).json()) as ResearchManifest;

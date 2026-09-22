@@ -480,4 +480,3 @@ export function settlePending(
   return { fills, changed };
 }
 
-const hhmm = (m: number) => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;

@@ -287,8 +287,6 @@ export function simulate(input: SimInput): { result: BtResult; log: string[] } {
         continue; // 一字跌停卖不出
       }
       const legs = outcome.legs;
-      const exitPrice = legs[0]!.price;
-      const note = outcome.note;
       for (const leg of legs) {
         const qty = leg.qty;
         if (qty < 100) continue;

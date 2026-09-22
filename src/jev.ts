@@ -109,7 +109,7 @@ export function buildQuestions(s: SignalState, list: Scored[], costBps: number):
   return questions;
 }
 
-export function buildSellQuestions(s: SignalState, positions: HeldPositionInput[]): Record<string, unknown> {
+export function buildSellQuestions(_s: SignalState, positions: HeldPositionInput[]): Record<string, unknown> {
   const questions: Record<string, unknown> = {};
   positions.forEach((p, i) => {
     questions[`q${i}`] = {

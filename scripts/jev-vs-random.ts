@@ -57,14 +57,18 @@ export function drawRandom(pool: string[], k: number, rand: () => number): strin
   return arr.slice(0, n);
 }
 
-/** 信号日 D 收盘 -> 持有 hold 个交易日后收盘的净收益 bps（扣往返成本）。拿不到就 null。 */
-export function fwdNetBps(bars: ResearchDailyBar[], date: string, hold: number, costBps: number): number | null {
-  const idx = bars.findIndex((b) => b.date === date);
+/**
+ * 信号日 D 收盘价是"决策时已经看到的价"，拿它当成交价 = 同一根 K 线前视。
+ * 改成：次日 D+1 开盘买入、持有 hold 个交易日后（D+1+hold）收盘卖出，扣往返成本。
+ * 与日频基线的执行口径一致（隔天下单），拿不到未来数据则 null。
+ */
+export function fwdNetBps(bars: ResearchDailyBar[], signalDate: string, hold: number, costBps: number): number | null {
+  const idx = bars.findIndex((b) => b.date === signalDate);
   if (idx < 0) return null;
-  const entry = bars[idx];
-  const exit = bars[idx + hold];
-  if (!entry || !exit || !(entry.close > 0)) return null;
-  return ((exit.close - entry.close) / entry.close) * 10_000 - costBps;
+  const entry = bars[idx + 1];
+  const exit = bars[idx + 1 + hold];
+  if (!entry || !exit || !(entry.open > 0)) return null;
+  return ((exit.close - entry.open) / entry.open) * 10_000 - costBps;
 }
 
 const mean = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);

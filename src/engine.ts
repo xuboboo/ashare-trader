@@ -13,7 +13,7 @@ import { stopCounterfactual, summarizeStopCounterfactuals, type StopCounterfactu
 import { appendFile, mkdir } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { TradingCalendar } from "./calendar";
-import { defaultFactorParams, featuresFromSnapshot, gateLabel, ma5CloseBefore, marketGate, scoreStock, type FactorParams, type Gate, type Scored } from "./factors";
+import { defaultFactorParams, featuresFromSnapshot, gateLabel, ma5CloseBefore, marketGate, scoreStock, type Gate, type Scored } from "./factors";
 import { FactorModel, type Decision, type DailyBias, type Model, type SignalState, LlmAdvisory } from "./model";
 import { JevModel } from "./jev";
 import { LocalModel } from "./local";
@@ -92,7 +92,6 @@ export class Engine {
 
   private snapshots = new Map<string, Snapshot>();
   private quoteFails = 0;
-  private stale = true;
   private eodOnly = config.eodOnly;
   private pending = new Map<string, SuggestedOrder>();
   private indexMa5: number | null = null;
@@ -341,7 +340,6 @@ export class Engine {
         this.snapshots = await fetchSnapshots(codes);
         ok = this.snapshots.size;
         this.quoteFails = 0;
-        this.stale = false;
       } catch (e) {
         this.quoteFails++;
         if (this.quoteFails >= 3) this.eodOnly = true;
@@ -359,7 +357,6 @@ export class Engine {
             ok = probe.size;
             this.eodOnly = false;
             this.quoteFails = 0;
-            this.stale = false;
             console.log(`[engine] 实时链路恢复（探测 ${probe.size} 支），退出日频降级`);
           }
         } catch {

@@ -15,12 +15,12 @@ describe("Jev vs 随机对照", () => {
     expect(new Set(a).size).toBe(2); // 无重复
   });
 
-  test("未来收益 = 收盘差 - 成本", () => {
-    const bars = [bar("d0", 10), bar("d1", 10), bar("d2", 11)];
-    // d0 买入(10)，持有2日到 d2(11) = +10% = 1000bp，扣 100bp = 900
+  test("未来收益 = 次日开盘买入、持有 hold 日后收盘卖出，扣成本", () => {
+    const bars = [bar("d0", 10), bar("d1", 10), bar("d2", 11), bar("d3", 11), bar("d4", 11)];
+    // 信号 d0 -> 次日 d1 开盘(10)买，持2日到 d3 收盘(11) = +1000bp，扣 100 = 900
     expect(fwdNetBps(bars, "d0", 2, 100)).toBeCloseTo(900, 0);
-    // 未来不足 hold 根 -> null
-    expect(fwdNetBps(bars, "d1", 2, 100)).toBeNull();
+    // 未来不足（d3 之后无 d5）-> null
+    expect(fwdNetBps(bars, "d3", 2, 100)).toBeNull();
   });
 
   test("Jev 明显选到涨得好的票时 jevVsRandom 为正、样本不足时给保守结论", () => {

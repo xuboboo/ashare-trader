@@ -49,7 +49,7 @@ export interface Session {
 
 const S = config.session;
 
-export function phaseOf(ymd: string, minutes: number, tradingDay: boolean): Phase {
+export function phaseOf(_ymd: string, minutes: number, tradingDay: boolean): Phase {
   if (!tradingDay) return "closed";
   if (minutes < S.callAuctionStart) return "pre-open";
   if (minutes < S.callAuctionEnd) return "call-auction";

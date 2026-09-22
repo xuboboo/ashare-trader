@@ -15,7 +15,6 @@
  */
 import { join } from "node:path";
 import { config } from "./config";
-import { roundTrip } from "./costs";
 import type { Scored } from "./factors";
 import { FactorModel, type Decision, type DecisionTrace, type Model, type Pick, type SignalState } from "./model";
 import { eligible as pickEligible } from "./jev";

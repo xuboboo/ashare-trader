@@ -19,7 +19,7 @@ import { join } from "node:path";
 import { config } from "../src/config";
 import { researchRoot, loadDailyBars, type ResearchDailyBar, type ResearchManifest } from "../src/research";
 import { defaultFactorParams, featuresFromDaily, scoreStock, type Scored } from "../src/factors";
-import { roundTrip, buyCosts, sellCosts } from "../src/costs";
+import { roundTrip } from "../src/costs";
 import { buildState, buildQuestions, defaultAsk, eligible } from "../src/jev";
 import { cannotAffordLot } from "../src/symbols";
 import type { SignalState } from "../src/model";
@@ -66,8 +66,6 @@ const vol5 = new Map<string, (number | undefined)[]>();
 
 // 交易日全集（升序），只保留能凑齐未来 HOLD 根的；取最近 MAX_DAYS 个
 const allDates = [...new Set([...dailyByCode.values()].flatMap((b) => b.map((x) => x.date)))].sort();
-const lastDate: Record<string, string> = {};
-for (const [code, bars] of dailyByCode) if (bars.length) lastDate[code] = bars[bars.length - 1]!.date;
 const usableDates = allDates.filter((d) => {
   // 至少几只票在这天之后还有 HOLD 根，才有可结算样本
   let n = 0;
