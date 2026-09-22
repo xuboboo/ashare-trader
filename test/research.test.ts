@@ -2,14 +2,15 @@ import { describe, expect, test } from "bun:test";
 import { splitForTrade, validateResearchManifest } from "../src/research";
 
 const good = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   dataset: "test",
   timezone: "Asia/Shanghai",
   priceBasis: "raw",
   universe: { path: "universe", format: "date-json", pointInTime: true, source: "test" },
   daily: { path: "daily-raw", format: "code-json", pointInTime: true, source: "test" },
   minutes: { path: "minutes-1m", format: "date-code-json", intervalMinutes: 1, source: "test" },
-  execution: { entryTime: "14:45", exitDeadline: "10:00", entryPrice: "ask", exitPrice: "bid", maxBarAgeSeconds: 60 },
+  execution: { entryTime: "14:45", entryPrice: "ask", exitPrice: "bid", maxBarAgeSeconds: 60, decisionIntervalMinutes: 1 },
+  labels: { policy: "jev-autonomous", censoring: "right" },
   splits: {
     train: { from: "2019-01-01", to: "2023-12-31" },
     validation: { from: "2024-01-01", to: "2024-12-31" },
@@ -20,6 +21,16 @@ const good = {
 describe("研究数据协议", () => {
   test("接受严格的 point-in-time / 14:45 / 分钟数据 manifest", () => {
     expect(validateResearchManifest(good)).toEqual([]);
+  });
+
+  test("拒绝旧固定 10:00 协议，避免 legacy 标签混入 Jev 研究", () => {
+    const old = structuredClone(good) as any;
+    old.schemaVersion = 1;
+    old.execution.exitDeadline = "10:00";
+    delete old.execution.decisionIntervalMinutes;
+    delete old.labels;
+    expect(validateResearchManifest(old).join("\\n")).toContain("schemaVersion");
+    expect(validateResearchManifest(old).join("\\n")).toContain("jev-autonomous");
   });
 
   test("拒绝复权价、错误入口时间和重叠切分", () => {

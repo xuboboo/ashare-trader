@@ -95,32 +95,15 @@ bun run start
 - 一次请求把最多 `JEV_MAX_QUESTIONS` 只候选问完；问题文本里写死了退出规则与往返成本
 - 返回的概率低于 `JEV_MIN_PROB` 的候选直接不采纳；全部不及格就是 hold，不硬凑一单
 - 同一轮输入相同会命中 `data/llm/jev-<date>-<hash>.json` 缓存，不重复计费
-- 没 key / 超时 / 返回不可用 → 降级回规则打分，仪表盘顶部会亮横幅（`decision.modelFailed`）
+- 没 key / 超时 / 返回不可用 → Jev fail-closed HOLD，绝不冒充规则模型（`decision.modelFailed`）
 
 验证降级与出单逻辑不需要 key：`bun test test/jev.test.ts`（用注入的假回答跑完九种情形）。
 
-## 启用本地概率模型（无需任何 key）
+## local 训练状态
 
-```powershell
-bun run fetch:daily   # 抓本地日线（一次即可，之后可增量重跑）
-bun run train         # 训练 + 留出集评估，写入 data/model.json
-# .env
-MODEL=local
-bun run start
-```
-
-行为要点：
-
-- 与 `jev` 共用同一套筛选与同一个 `Model` 接口；面板上模型名显示 `local`
-- **采纳规则：有校准表时看“校准后期望 > 0”，没校准表才退回 `JEV_MIN_PROB` 胜率阈值。**
-  胜率赢不等于期望赢（止损剪掉上行尾部），拿 P(赢) 过阈做买入决定是口径错误
-- 训练标签 = 与回测同一条出场规则（`src/exit.ts`）算出的“扣全部成本后是否为正”；
-  **一字跌停卖不出与次日停牌的样本不再被丢弃**（按强平定价计入，否则标签左截尾会把最陡的亏损剪掉），
-  **闸门关着的日子不进入训练集**（引擎只在闸门开时问模型，条件分布必须一致）
-- `data/model.json` 里带着训练时的留出集指标（AUC、采纳后的净期望 bp、校准桶、censored 比例）。
-  指标差就是差，别自欺——当前因子集的实测结论见 README"三路决策模型"
-- 没有模型文件或 schema 不符 → 降级回规则打分并标 `modelFailed`（和 Jev 没 key 一个待遇）
-- 每次重跑 `bun run fetch:daily` 后再 `bun run train` 即可重训；训练完全确定性（零初始化 + 全量批梯度下降）
+旧 `bun run train` 已停用。它基于 `data/daily` 和固定持有期标签，不能与 Jev 自主持仓研究混用；
+当前 `MODEL=local` 不应作为研究结论或生产切换目标。先按 [研究链路](RESEARCH.md) 生成并审计 v2 Jev holding labels，
+再单独设计只使用这些标签的训练器。
 
 ## 参数表（`.env`，全部有代码内默认值）
 
@@ -152,7 +135,7 @@ bun run start
 | `MIN_AMOUNT_YI` / `MIN_MCAP_YI` | 2 / 60 | 成交额与市值门槛（市值只在实盘快照路径生效，日线口径没有该字段） |
 | `MIN_LIST_DAYS` | 60 | **回测数据层**生效：日线不够这个根数的股票直接不进样本（`fetch-daily`） |
 | `INDEX_MIN_AMOUNT_YI` | 3000 | 大盘闸门的上证成交额下限 |
-| `MODEL` | factor | `factor` = 规则打分；`local` = 本地概率模型（`bun run train`）；`jev` = 用 Jev 给每只候选出概率（失败自动降级回 factor） |
+| `MODEL` | factor | `factor` = 规则打分；`local` = 本地概率模型（`bun run train`）；`jev` = 用 Jev 给每只候选出概率（失败 fail-closed HOLD，不降级 factor） |
 | `TYPESAFE_AI_API_KEY` | 空 | Jev 的 key。**不配也能跑**，只是 `MODEL=jev` 会立刻降级并在事件里标 `modelFailed` |
 | `TYPESAFE_BASE_URL` / `JEV_MODEL_ID` | api.typesafe.ai/v1 / jev-latest | Jev 接入点 |
 | `JEV_MIN_PROB` | 0.55 | 胜率阈值：jev 用它筛；local 有校准表时改用“期望>0”，没校准表才退回这个阈值 |

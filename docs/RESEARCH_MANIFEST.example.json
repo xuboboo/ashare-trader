@@ -1,6 +1,6 @@
 {
-  "schemaVersion": 1,
-  "dataset": "ashare-research-v1",
+  "schemaVersion": 2,
+  "dataset": "ashare-research-v2-jev",
   "timezone": "Asia/Shanghai",
   "priceBasis": "raw",
   "universe": {
@@ -23,10 +23,14 @@
   },
   "execution": {
     "entryTime": "14:45",
-    "exitDeadline": "10:00",
     "entryPrice": "ask",
     "exitPrice": "bid",
-    "maxBarAgeSeconds": 60
+    "maxBarAgeSeconds": 60,
+    "decisionIntervalMinutes": 1
+  },
+  "labels": {
+    "policy": "jev-autonomous",
+    "censoring": "right"
   },
   "splits": {
     "train": { "from": "2019-01-01", "to": "2023-12-31" },

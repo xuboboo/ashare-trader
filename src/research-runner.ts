@@ -1,21 +1,21 @@
 /**
- * 严格研究 runner：只读 research/ 协议，不读取旧 data/daily，也不调用任何模型。
+ * 严格研究 runner：只读 research/ 协议，不读取旧 data/daily；买入与持仓退出都走注入的 Jev 模型。
  *
  * 每个样本的时间顺序是：
- *   旧固定持有期研究口径：T 日 PIT 股票池 -> T 日 14:45 之前的 1m -> ask 入场 -> T+1 09:30~10:00 bid 出场。
- *   这不是当前生产 Jev 的退出规则；生产退出时点由 Jev 自主判断。
+ *   Jev 自主研究口径：T 日 PIT 股票池 -> T 日 14:45 可见 1m -> Jev 买入 ->
+ *   T+1 起逐分钟先过硬止损、再由 Jev 判断卖出；未退出只记右删失。
  * 训练、验证、测试只按 manifest 切分；跨边界的标签直接丢弃。
  */
 import { buyCosts, sellCosts } from "./costs";
 import { defaultFactorParams, scoreStock, type FactorParams, type Scored } from "./factors";
-import { buildResearchSnapshot, researchFeatures, simulateMinuteExit } from "./research-engine";
+import { buildResearchSnapshot, researchFeatures } from "./research-engine";
+import { simulateJevExit } from "./research-jev";
 import {
   dateInRange,
   listResearchDates,
   loadDailyBars,
   loadMinuteBars,
   loadUniverseSnapshot,
-  splitForTrade,
   type DateRange,
   type ResearchDailyBar,
   type ResearchManifest,
@@ -25,6 +25,7 @@ import {
 } from "./research";
 import { config } from "./config";
 import { limitDown, round2, sharesForBudget } from "./symbols";
+import type { Decision, DecisionTrace, Model, SignalState } from "./model";
 
 export type ResearchRunSplit = ResearchSplitName | "all";
 
@@ -32,9 +33,10 @@ export interface ResearchRunnerOptions {
   split?: ResearchRunSplit;
   k?: number;
   sizeCny?: number;
-  gapTrimPct?: number;
   stopLossPct?: number;
   factorParams?: FactorParams;
+  /** 研究 runner 必须显式注入 Jev；缺失时拒绝运行，绝不偷偷改用 Factor。 */
+  jevModel?: Model;
 }
 
 export interface ResearchRunnerLoader {
@@ -52,6 +54,9 @@ export interface ResearchTrade {
   exitDate: string;
   entryTime: "14:45";
   exitTime: string;
+  exitSource: "jev" | "hard-rule";
+  entryTrace: DecisionTrace;
+  exitTrace: DecisionTrace;
   score: number;
   entry: number;
   exit: number;
@@ -60,6 +65,30 @@ export interface ResearchTrade {
   netBps: number;
   costYuan: number;
   exitNote: string;
+}
+
+export type ResearchHoldingLabelStatus = "sold-by-jev" | "hard-stop" | "boundary-excluded" | "right-censored" | "jev-failed";
+
+export interface ResearchHoldingLabel {
+  split: ResearchSplitName;
+  code: string;
+  name: string;
+  entryDate: string;
+  entryTime: "14:45";
+  entry: number;
+  qty: number;
+  status: ResearchHoldingLabelStatus;
+  exitDate?: string;
+  exitTime?: string;
+  exitPrice?: number;
+  exitNote?: string;
+  entryTrace: DecisionTrace;
+  exitTrace?: DecisionTrace;
+  decisionRounds: number;
+  remoteCalls: number;
+  cacheHits: number;
+  jevFailures: number;
+  netBps?: number;
 }
 
 export interface ResearchSplitMetrics {
@@ -76,17 +105,23 @@ export interface ResearchSplitMetrics {
   totalCostYuan: number;
   notionalYuan: number;
   tradesDetail: ResearchTrade[];
+  labelsDetail: ResearchHoldingLabel[];
+  decisionRounds: number;
+  remoteCalls: number;
+  cacheHits: number;
+  jevFailures: number;
 }
 
 export interface ResearchBacktestReport {
   dataset: string;
   entryTime: "14:45";
-  exitDeadline: "10:00";
+  exitPolicy: "jev-autonomous";
+  censoring: "right";
   parameters: {
     k: number;
     sizeCny: number;
-    gapTrimPct: number;
     stopLossPct: number;
+    decisionIntervalMinutes: 1;
     factor: FactorParams;
   };
   splits: Record<ResearchSplitName, ResearchSplitMetrics>;
@@ -107,6 +142,11 @@ function emptySplit(split: ResearchSplitName): ResearchSplitMetrics {
     totalCostYuan: 0,
     notionalYuan: 0,
     tradesDetail: [],
+    labelsDetail: [],
+    decisionRounds: 0,
+    remoteCalls: 0,
+    cacheHits: 0,
+    jevFailures: 0,
   };
 }
 
@@ -138,6 +178,34 @@ function splitRanges(manifest: ResearchManifest, requested: ResearchRunSplit): [
   return [[requested, manifest.splits[requested]]];
 }
 
+function buyState(date: string, candidates: Scored[], openSlots: number): SignalState {
+  return {
+    date,
+    time: "14:45",
+    horizon: "研究入口：Jev 自主决定是否买入与买入标的；T+1、涨跌停、流动性与成交价是硬边界",
+    gate: { allowed: true, status: "open", reasons: ["候选已通过研究侧硬筛选"], skipped: [] },
+    index: null,
+    candidates,
+    heldCodes: [],
+    allowed: { buy: true, sell: false },
+    vetoes: {},
+    openSlots,
+    decisionMode: "buy",
+    positions: [],
+  };
+}
+
+function countDecision(result: ResearchSplitMetrics, decision: Decision): void {
+  result.decisionRounds++;
+  if (decision.trace?.call === "remote") result.remoteCalls++;
+  if (decision.trace?.call === "cache") result.cacheHits++;
+  if (decision.modelFailed || decision.trace?.source !== "jev" || decision.trace.status !== "ok") result.jevFailures++;
+}
+
+function validJevDecision(decision: Decision): decision is Decision & { trace: DecisionTrace } {
+  return !decision.modelFailed && decision.trace?.source === "jev" && decision.trace.status === "ok";
+}
+
 function addTradeMetrics(result: ResearchSplitMetrics, trade: ResearchTrade) {
   result.trades++;
   result.totalCostYuan = round2(result.totalCostYuan + trade.costYuan);
@@ -162,14 +230,18 @@ export function fileResearchLoader(manifest: ResearchManifest, dataDir = config.
 }
 
 /**
- * 运行固定参数的研究回测。这里没有 sweep/自动选参入口，避免把 test 当验证集使用。
- * 需要调参时只能先在 train 上形成版本，再锁定参数跑 validation，最后单独跑 test。
+ * 运行固定参数的 Jev 自主研究回测。
+ *
+ * 没有 sweep/自动选参入口，避免把 test 当验证集使用；更重要的是 jevModel 必须显式传入，
+ * 没有模型时直接失败，不会偷偷把 FactorModel 当成 Jev 标签生成器。
  */
 export async function runResearchBacktest(
   manifest: ResearchManifest,
   loader: ResearchRunnerLoader,
   options: ResearchRunnerOptions = {},
 ): Promise<ResearchBacktestReport> {
+  if (!options.jevModel) throw new Error("Jev 自主研究必须显式注入 jevModel；禁止回退 FactorModel 或固定退出规则");
+
   const requested = options.split ?? "all";
   const ranges = splitRanges(manifest, requested);
   const selectedSplits = new Set(ranges.map(([name]) => name));
@@ -180,7 +252,6 @@ export async function runResearchBacktest(
   };
   const k = Math.max(1, Math.floor(options.k ?? config.k));
   const sizeCny = options.sizeCny ?? config.sizeCny;
-  const gapTrimPct = options.gapTrimPct ?? config.gapTrimPct;
   const stopLossPct = options.stopLossPct ?? config.stopLossPct;
   const factor = paramsFor14h45(options);
   const dates = [...new Set((await loader.listDates()).sort())];
@@ -210,20 +281,17 @@ export async function runResearchBacktest(
     return value;
   };
 
-  for (let i = 0; i < dates.length; i++) {
-    const entryDate = dates[i]!;
+  for (const entryDate of dates) {
     const split = (Object.keys(result) as ResearchSplitName[]).find((name) => dateInRange(entryDate, manifest.splits[name]));
     if (!split || !selectedSplits.has(split)) continue;
-    const nextDate = dates[i + 1];
+    const splitRange = manifest.splits[split];
     const bucket = result[split];
     bucket.entryDays++;
-    if (!nextDate) {
-      bucket.boundaryExcluded++;
-      continue;
-    }
-    const labelSplit = splitForTrade(manifest, entryDate, nextDate);
-    if (labelSplit !== split) {
-      bucket.boundaryExcluded++;
+    // split 最后一个交易日没有同 split 的未来路径，不能为了凑样本去读取边界外数据。
+    // 若边界外仍有数据，明确记 boundary；数据集在此结束则记右删失。
+    if (!dates.some((date) => date > entryDate && date <= splitRange.to)) {
+      if (dates.some((date) => date > splitRange.to)) bucket.boundaryExcluded++;
+      else bucket.censored++;
       continue;
     }
 
@@ -236,56 +304,124 @@ export async function runResearchBacktest(
       const features = researchFeatures({ date: entryDate, code: entry.code, entry, bars });
       const scoredStock = scoreStock(features, {}, false, factor);
       if (scoredStock.rejects.length || !(features.price > 0)) continue;
-      const entryAsk = buildResearchSnapshot({ date: entryDate, code: entry.code, entry, bars }).asks[0]?.p ?? 0;
-      if (!(features.price > 0) || !(entryAsk > 0)) continue;
+      const entrySnapshot = buildResearchSnapshot({ date: entryDate, code: entry.code, entry, bars });
+      if (!((entrySnapshot.asks[0]?.p ?? 0) > 0)) continue;
       bucket.candidates++;
       scored.push({ scored: scoredStock, entry, bars, daily });
     }
+    if (!scored.length) continue;
     scored.sort((a, b) => b.scored.score - a.scored.score || a.entry.code.localeCompare(b.entry.code));
-    const picks = scored.slice(0, Math.min(k, config.maxDailyOpens));
+
+    // Factor 只负责硬筛选后的候选排序/截断；最终是否买、买哪只由 Jev 决定。
+    const entryDecision = await options.jevModel.decide(
+      buyState(entryDate, scored.map((x) => x.scored), Math.min(k, config.maxDailyOpens)),
+    );
+    countDecision(bucket, entryDecision);
+    if (!validJevDecision(entryDecision)) continue;
+    const entryTrace = entryDecision.trace;
+    const picks = entryDecision.picks
+      .filter((pick) => scored.some((item) => item.scored.features.code === pick.code))
+      .slice(0, Math.min(k, config.maxDailyOpens));
     bucket.selected += picks.length;
+
     for (const pick of picks) {
-      const entrySnapshot = buildResearchSnapshot({ date: entryDate, code: pick.entry.code, entry: pick.entry, bars: pick.bars });
+      const item = scored.find((x) => x.scored.features.code === pick.code);
+      if (!item) continue;
+      const entrySnapshot = buildResearchSnapshot({ date: entryDate, code: item.entry.code, entry: item.entry, bars: item.bars });
       const entryPrice = entrySnapshot.asks[0]?.p ?? 0;
       const qty = sharesForBudget(entryPrice, sizeCny);
       if (!(entryPrice > 0) || qty < 100) continue;
-      const entryDaily = exactBar(pick.daily, entryDate);
-      if (!entryDaily || entryDaily.amountEst === true) throw new Error(`${pick.entry.code} ${entryDate} 缺少 raw 当日收盘用于 T+1 涨跌停参考`);
-      const nextBars = await getMinutes(nextDate, pick.entry.code);
-      const exit = simulateMinuteExit({
-        bars: nextBars,
+      const entryDaily = exactBar(item.daily, entryDate);
+      if (!entryDaily || entryDaily.amountEst === true) throw new Error(`${item.entry.code} ${entryDate} 缺少 raw 当日收盘用于 T+1 涨跌停参考`);
+
+      const futureDates = dates.filter((date) => date > entryDate && date <= splitRange.to);
+      const future = [];
+      for (const date of futureDates) {
+        const dayBars = await getMinutes(date, item.entry.code);
+        const prev = previousBar(item.daily, date);
+        future.push({
+          date,
+          bars: dayBars,
+          limitDown: prev ? limitDown(prev.close, item.entry.code, item.entry.name) : undefined,
+        });
+      }
+      const exit = await simulateJevExit({
+        entryDate,
+        entryTime: "14:45",
         entry: entryPrice,
-        stop: round2(entryPrice * (1 - stopLossPct / 100)),
         qty,
-        gapTrimPct,
-        deadline: manifest.execution.exitDeadline,
-        limitDown: limitDown(entryDaily.close, pick.entry.code, pick.entry.name),
+        stop: round2(entryPrice * (1 - stopLossPct / 100)),
+        code: item.entry.code,
+        entryInfo: item.entry,
+        future,
+        model: options.jevModel,
+        decisionIntervalMinutes: manifest.execution.decisionIntervalMinutes,
       });
-      if (exit.censored || exit.legs.reduce((sum, leg) => sum + leg.qty, 0) !== qty) {
+      bucket.decisionRounds += exit.decisionRounds;
+      bucket.remoteCalls += exit.remoteCalls;
+      bucket.cacheHits += exit.cacheHits;
+      bucket.jevFailures += exit.jevFailures;
+
+      const boundaryHasFuture = dates.some((date) => date > splitRange.to);
+      const status = exit.status === "right-censored" || exit.status === "no-observation"
+        ? boundaryHasFuture ? "boundary-excluded" : "right-censored"
+        : exit.status;
+      const label: ResearchHoldingLabel = {
+        split,
+        code: item.entry.code,
+        name: item.entry.name,
+        entryDate,
+        entryTime: "14:45",
+        entry: round2(entryPrice),
+        qty,
+        status,
+        exitDate: exit.exitDate,
+        exitTime: exit.exitTime,
+        exitPrice: exit.exitPrice,
+        exitNote: exit.exitNote,
+        entryTrace,
+        exitTrace: exit.exitTrace,
+        decisionRounds: 1 + exit.decisionRounds,
+        remoteCalls: (entryDecision.trace.call === "remote" ? 1 : 0) + exit.remoteCalls,
+        cacheHits: (entryDecision.trace.call === "cache" ? 1 : 0) + exit.cacheHits,
+        jevFailures: exit.jevFailures,
+      };
+      bucket.labelsDetail.push(label);
+
+      if (status === "boundary-excluded") {
+        bucket.boundaryExcluded++;
+        continue;
+      }
+      if (status === "right-censored") {
         bucket.censored++;
         continue;
       }
+      if (!exit.exitDate || !exit.exitTime || !(exit.exitPrice && exit.exitPrice > 0) || !exit.exitTrace) continue;
       const buyAmount = entryPrice * qty;
-      const sellAmount = exit.legs.reduce((sum, leg) => sum + leg.price * leg.qty, 0);
-      const cost = buyCosts(buyAmount).total + exit.legs.reduce((sum, leg) => sum + sellCosts(leg.price * leg.qty).total, 0);
+      const sellAmount = exit.exitPrice * qty;
+      const cost = buyCosts(buyAmount).total + sellCosts(sellAmount).total;
       const gross = sellAmount - buyAmount;
       const net = gross - cost;
+      label.netBps = round2(net / buyAmount * 10_000);
       addTradeMetrics(bucket, {
         split,
-        code: pick.entry.code,
-        name: pick.entry.name,
+        code: item.entry.code,
+        name: item.entry.name,
         entryDate,
-        exitDate: nextDate,
+        exitDate: exit.exitDate,
         entryTime: "14:45",
-        exitTime: exit.legs.at(-1)!.time,
-        score: round2(pick.scored.score),
+        exitTime: exit.exitTime,
+        exitSource: status === "hard-stop" ? "hard-rule" : "jev",
+        entryTrace,
+        exitTrace: exit.exitTrace,
+        score: round2(pick.score),
         entry: round2(entryPrice),
-        exit: round2(sellAmount / qty),
+        exit: round2(exit.exitPrice),
         qty,
         grossBps: round2(gross / buyAmount * 10_000),
         netBps: round2(net / buyAmount * 10_000),
         costYuan: round2(cost),
-        exitNote: exit.legs.map((leg) => `${leg.time} ${leg.note}`).join(" + "),
+        exitNote: exit.exitNote ?? "",
       });
     }
   }
@@ -293,8 +429,15 @@ export async function runResearchBacktest(
   return {
     dataset: manifest.dataset,
     entryTime: manifest.execution.entryTime,
-    exitDeadline: manifest.execution.exitDeadline,
-    parameters: { k, sizeCny, gapTrimPct, stopLossPct, factor },
+    exitPolicy: manifest.labels.policy,
+    censoring: manifest.labels.censoring,
+    parameters: {
+      k,
+      sizeCny,
+      stopLossPct,
+      decisionIntervalMinutes: manifest.execution.decisionIntervalMinutes,
+      factor,
+    },
     splits: result,
   };
 }

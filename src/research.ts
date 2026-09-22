@@ -3,13 +3,14 @@
  *
  * 这套协议故意不兼容旧的 data/daily：旧日线没有 point-in-time 股票池，
  * 也没有 14:45 可见截面和分钟级成交路径，不能再被当作策略回测输入。
- * 当前 manifest 的 10:00 exitDeadline 是旧固定持有期研究基准，不是生产 Jev 的退出规则。
+ * v2 manifest 只描述 Jev 自主退出所需的可见数据与观测边界；
+ * 不再把固定 10:00 写进生产研究协议。旧 v1 是 legacy，禁止混入新标签。
  */
 import { join, isAbsolute, sep } from "node:path";
 import { config } from "./config";
 import type { DailyBar } from "./quotes";
 
-export const RESEARCH_SCHEMA_VERSION = 1;
+export const RESEARCH_SCHEMA_VERSION = 2;
 export const RESEARCH_DIR_NAME = "research";
 
 export interface DateRange {
@@ -18,7 +19,7 @@ export interface DateRange {
 }
 
 export interface ResearchManifest {
-  schemaVersion: 1;
+  schemaVersion: 2;
   dataset: string;
   timezone: "Asia/Shanghai";
   priceBasis: "raw";
@@ -42,10 +43,14 @@ export interface ResearchManifest {
   };
   execution: {
     entryTime: "14:45";
-    exitDeadline: "10:00";
     entryPrice: "ask";
     exitPrice: "bid";
     maxBarAgeSeconds: number;
+    decisionIntervalMinutes: 1;
+  };
+  labels: {
+    policy: "jev-autonomous";
+    censoring: "right";
   };
   splits: {
     train: DateRange;
@@ -160,11 +165,13 @@ export function validateResearchManifest(raw: unknown): string[] {
     if (!validRelativePath(section)) errors.push(name + " 必须是安全的相对路径");
   }
   if (m?.execution?.entryTime !== "14:45") errors.push("execution.entryTime 必须是 14:45");
-  if (m?.execution?.exitDeadline !== "10:00") errors.push("execution.exitDeadline 必须是 10:00");
   if (m?.execution?.entryPrice !== "ask" || m.execution.exitPrice !== "bid")
     errors.push("执行价格必须使用 entry=ask、exit=bid");
   if (!(m?.execution?.maxBarAgeSeconds && m.execution.maxBarAgeSeconds <= 60))
     errors.push("maxBarAgeSeconds 必须为 1-60 秒");
+  if (m?.execution?.decisionIntervalMinutes !== 1) errors.push("execution.decisionIntervalMinutes 必须为 1");
+  if (m?.labels?.policy !== "jev-autonomous") errors.push("labels.policy 必须是 jev-autonomous");
+  if (m?.labels?.censoring !== "right") errors.push("labels.censoring 必须是 right");
 
   const train = m?.splits?.train;
   const validation = m?.splits?.validation;
@@ -338,8 +345,14 @@ export async function loadMinuteBars(
       b.volumeShares < 0 ||
       !Number.isFinite(b.amountYuan) ||
       b.amountYuan < 0 ||
-      !(b.ask >= 0) ||
-      !(b.bid >= 0) ||
+      !Number.isFinite(b.ask) ||
+      b.ask < 0 ||
+      !Number.isFinite(b.bid) ||
+      b.bid < 0 ||
+      !Number.isFinite(b.askSize) ||
+      b.askSize < 0 ||
+      !Number.isFinite(b.bidSize) ||
+      b.bidSize < 0 ||
       !Number.isFinite(b.volumeRatio) ||
       !Number.isFinite(b.turnoverPct) ||
       !Number.isFinite(b.mcapYi) ||

@@ -1,16 +1,18 @@
 import { describe, expect, test } from "bun:test";
 import { runResearchBacktest, type ResearchRunnerLoader } from "../src/research-runner";
 import type { ResearchDailyBar, ResearchManifest, ResearchMinuteBar, ResearchUniverseSnapshot } from "../src/research";
+import type { Decision, Model } from "../src/model";
 
 const manifest: ResearchManifest = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   dataset: "runner-test",
   timezone: "Asia/Shanghai",
   priceBasis: "raw",
   universe: { path: "universe", format: "date-json", pointInTime: true, source: "fixture" },
   daily: { path: "daily-raw", format: "code-json", pointInTime: true, source: "fixture" },
   minutes: { path: "minutes-1m", format: "date-code-json", intervalMinutes: 1, source: "fixture" },
-  execution: { entryTime: "14:45", exitDeadline: "10:00", entryPrice: "ask", exitPrice: "bid", maxBarAgeSeconds: 60 },
+  execution: { entryTime: "14:45", entryPrice: "ask", exitPrice: "bid", maxBarAgeSeconds: 60, decisionIntervalMinutes: 1 },
+  labels: { policy: "jev-autonomous", censoring: "right" },
   splits: {
     train: { from: "2026-01-01", to: "2026-01-05" },
     validation: { from: "2026-01-06", to: "2026-01-06" },
@@ -54,7 +56,7 @@ const universe = (date: string): ResearchUniverseSnapshot => ({
 });
 
 describe("严格研究 runner", () => {
-  test("只用 14:45 ask、次日分钟 bid，并丢弃 split 边界标签", async () => {
+  test("Jev 决定买入与退出，只用 14:45 ask、未来分钟 bid，并丢弃 split 边界标签", async () => {
     const minutes: Record<string, ResearchMinuteBar[]> = {
       "2026-01-02/600000": [
         bar("2026-01-02", "09:30", { open: 10, close: 10.1, ask: 10.11, volumeShares: 10_000_000, amountYuan: 100_500_000 }),
@@ -72,11 +74,44 @@ describe("严格研究 runner", () => {
       loadMinutes: async (date, code) => minutes[`${date}/${code}`] ?? [],
     };
 
-    const report = await runResearchBacktest(manifest, loader, { split: "train" });
+    const jev: Model = {
+      name: "jev-fixture",
+      decide: async (state): Promise<Decision> => {
+        if (state.decisionMode === "buy") {
+          return {
+            action: "buy",
+            probabilities: { buy: 0.8, sell: 0, hold: 0.2 },
+            probabilitySemantics: "model-prompt",
+            picks: [{ code: "600000", name: "测试股份", probability: 0.8, score: 1, reasons: ["fixture"] }],
+            latencyMs: 1,
+            late: false,
+            inputTokens: 1,
+            modelFailed: false,
+            trace: { source: "jev", model: "jev-fixture", call: "remote", status: "ok" },
+          };
+        }
+        const p = state.positions?.[0];
+        const sell = Boolean(p && p.price >= 10.95);
+        return {
+          action: sell ? "sell" : "hold",
+          probabilities: { buy: 0, sell: sell ? 0.8 : 0, hold: sell ? 0.2 : 1 },
+          probabilitySemantics: "model-prompt",
+          picks: sell && p ? [{ code: p.code, name: p.name, probability: 0.8, score: 0, reasons: ["fixture"] }] : [],
+          latencyMs: 1,
+          late: false,
+          inputTokens: 1,
+          modelFailed: false,
+          trace: { source: "jev", model: "jev-fixture", call: "remote", status: "ok" },
+        };
+      },
+    };
+    const report = await runResearchBacktest(manifest, loader, { split: "train", jevModel: jev });
     expect(report.parameters.k).toBeGreaterThan(0);
     expect(report.splits.train.trades).toBe(1);
     expect(report.splits.train.tradesDetail[0]!.entry).toBe(10.51);
     expect(report.splits.train.tradesDetail[0]!.exit).toBe(10.99);
+    expect(report.splits.train.tradesDetail[0]!.exitSource).toBe("jev");
+    expect(report.splits.train.labelsDetail[0]!.status).toBe("sold-by-jev");
     expect(report.splits.train.boundaryExcluded).toBe(1);
     expect(report.splits.validation.trades).toBe(0);
     expect(report.splits.test.trades).toBe(0);

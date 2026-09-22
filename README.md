@@ -6,7 +6,7 @@
 
 **A 股 T+1 决策台**：把 [Jev](https://ai-sdk.dev/providers/ai-sdk-providers/typesafe-ai)（TypeSafe 的 System One 模型）接进 A 股的选股决策，
 配上严格到难看的成本核算、日线 T+1 回测，以及"AI 说了不算、硬约束说了算"的执行层。
-它不自动下单 —— **交易时段全程决策**：09:05 盘前预选一次；09:30 起连续竞价时段每 `DECIDE_EVERY_MS`（默认 60s）做一轮买入决策；持仓退出（止损 / 高开减半 / 到点清仓）只要持仓可卖就每轮评估。组合级风控闸（日亏损 3% / 回撤 10%，可配）触及时自动停止开仓、不封退出。
+它不自动下单 —— **交易时段全程决策**：09:05 盘前预选一次；09:30 起连续竞价时段每 `DECIDE_EVERY_MS`（默认 60s）做一轮买入决策；可卖持仓先过硬止损，再由 Jev 判断是否卖出。组合级风控闸（日亏损 3% / 回撤 10%，可配）触及时自动停止开仓、不封退出。
 
 > **当前状态：策略未通过自己的回测门槛，停在回测层。**
 > 294 支 × 801 个交易日的 36 组参数扫描全部净期望为负；默认那一组是
@@ -22,18 +22,18 @@
 | --- | --- | --- |
 | `factor`（默认） | 确定性规则打分，毫秒级，完全可回测（但排序本身未证明有效，见 `--select=random` 对照） | 想要稳定出单、跑通全流程 |
 | `local` | 本地概率模型：`bun run train` 用本地日线 + 与回测同一条出场规则训练的逻辑回归，输出"扣成本后为正"的概率 | 想要概率化的排序与阈值；零 API、零费用、可复现 |
-| `jev` | TypeSafe System One 远端评估模型（需 `TYPESAFE_AI_API_KEY`，无 key 自动降级 factor） | 有 key 且愿意接受外部依赖 |
+| `jev` | TypeSafe System One 远端评估模型（需 `TYPESAFE_AI_API_KEY`，无 key fail-closed HOLD） | 有 key 且愿意接受外部依赖 |
 
-`local` 的训练报告会如实写进 `data/model.json`（留出集 AUC、按阈值采纳后的净期望 bp）。
-用修正后的样本（不丢一字跌停、只采闸门开的日子、逐笔算真实费用）重训的结果：
+旧 `local` 日线训练器已停用：它使用固定持有期标签，不能代表 Jev 自主持仓。新的研究链路先生成带 trace 的 Jev v2 holding labels，再另行设计训练器。
+此前旧口径的训练报告曾写入 `data/model.json`，但不能作为当前 Jev 结论：
 留出集 **AUC 0.517**、正例率 0.431、全体平均净期望 -31.5bp；`JEV_MIN_PROB=0.55` 只采纳 9/283 笔、-49.4bp。
 **当前因子集对"隔夜+成本"口径没有可用的预测力**（修正前的 0.574 有一部分来自已修的样本截尾缺陷）。
 采纳规则也已改成看“校准后期望 > 0”而不是胜率阈值 —— 胜率赢不等于期望赢。
 
 ```
-# 训练与重训（每次抓完新日线后跑一次即可，完全确定性）
-bun run fetch:daily
-bun run train
+# Jev v2 研究（需要版本化 PIT 股票池 + 1m 数据 + Jev key）
+bun run research:check
+bun run research:backtest --split=train
 ```
 
 ## 它能做什么 / 不能做什么
@@ -56,7 +56,7 @@ Jev 是 TypeSafe 在 2026-09-16 发布的 "System One 模型"：它不生成文�
 本项目的用法（`src/jev.ts`）：
 
 - 问的是**可判定的陈述**，不是"你怎么看这只票"（时间与成本从当前状态实时取，不写死）：
-  *"在 ${date} ${time} 以对手价买入 X，按规则于次日 10:00 前退出，扣除实测往返成本后这笔收益为正"*
+  *"在 ${date} ${time} 以对手价买入 X，在 T+1、止损和交易规则约束下由 Jev 自主决定退出时点，扣除实测往返成本后这笔收益为正"*
 - 一次请求把最多 20 只候选一起问完（共享同一 state），boolean 返回的概率即该陈述为真的概率
 - 模型看到的 state 与规则层**同一份数据**（同一 `StockFeatures`、同一 `costs.ts` 口径），不给它任何额外字段，
   否则回测/实盘一致性就破了
@@ -76,7 +76,7 @@ TYPESAFE_AI_API_KEY=你的 key
 bun run start
 ```
 
-不配 key 也照跑：自动降级为 `MODEL=factor`，功能不缺失，只是不用模型。
+未配置 key 时 Jev 模式仍可启动观察，但每轮只会 fail-closed HOLD，不会冒充 FactorModel 结论；要让 Jev 真正决策必须配置 key。
 
 ## Quickstart
 
@@ -109,7 +109,7 @@ bun run scripts/atr-sweep.ts                 # 止损口径对比 + 三门槛实
 1. **开盘后**看"模型决策"面板：大字结论（买入/观望）与概率条，闸门关着就不动手
 2. 出建议单后，**在券商 App 里手工下单**（行里点"复制"，一行字直接可粘）
 3. 成交了立刻回填：仪表盘表单、`bun run scripts/fill.ts 002156 buy 800 "@61.40"`、或 `POST /fill`
-4. 次日 9:30-10:00 按系统提示的退出动作走（高开减半 / 跌破止损 / 到点清仓）
+4. 下一交易日开始，持仓可卖时先执行硬止损保护，其余退出由 Jev 自主判断
 5. 收盘后 `POST /scan` 复盘，或 `bun run scripts/backtest.ts` 重跑统计
 6. **回填错了不要紧**："成交与账本"区里每行有"撤销"（重放剩下的成交重建账本），
    整本想重来就点"清空账本"（先归档到 `data/archive/` 再清零）；CLI 对应 `--undo=<id>` 与 `--reset`
@@ -158,7 +158,7 @@ src/
   factors.ts    因子打分 + 大盘闸门；日线口径与快照口径共用同一个 scoreStock
   exit.ts       止损价与次日出场阶梯（回测、训练、实盘共用这一份规则）
   model.ts      FactorModel（默认，毫秒级）+ LlmAdvisory（仅日频：情绪闸门 + 个股 veto）
-  jev.ts        JevModel：TypeSafe System One 模型接入，逐只候选问 boolean，失败自动降级
+  jev.ts        JevModel：TypeSafe System One 模型接入，逐只候选问 boolean，失败 fail-closed
   local.ts      LocalModel：本地逻辑回归，按“校准后期望>0”采纳，无 model.json 降级 factor
   orders.ts     建议单生成 + 纸面撮合 settlePending（对手价成交、限价钳制、当日有效、买卖双向）
   state.ts      Book：T+1 可卖/冻结、费用按比例结转、止损线随成交落账、权益曲线、rebuild 重放
@@ -191,7 +191,8 @@ A 股个股上做不了高频挂撤单吃价差，四条约束叠加：
 剩下的都是数据与口径给的：
 
 - **选择偏差**：回测股票池是"今天"的成交额前 N，它们过去两年本来就更可能强势
-- **日线近似**：`次日 10:00 前清仓` 用收盘价代理；止损按当日最低价触及判定；
+- **legacy 日线近似**：旧 `次日 10:00 前清仓` 只用于历史对照，不能代表生产 Jev 或研究 v2；
+  Jev 研究使用逐分钟 bid、硬止损与 right-censored 标签；
   实盘的 VWAP 弱势离场在回测里根本不存在
 - **入场时刻不同构**：回测是 14:45 尾盘，实盘从 09:30 起全程可能出单 ——
   尾盘回测的结论不能为盘中入场背书
