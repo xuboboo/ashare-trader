@@ -54,9 +54,9 @@ export function phaseOf(ymd: string, minutes: number, tradingDay: boolean): Phas
   if (minutes < S.callAuctionStart) return "pre-open";
   if (minutes < S.callAuctionEnd) return "call-auction";
   if (minutes < S.noCancelEnd) return "no-cancel";
-  if (minutes <= S.morningEnd) return "continuous";
+  if (minutes < S.morningEnd) return "continuous";
   if (minutes < S.afternoonStart) return "lunch";
-  if (minutes <= S.afternoonEnd) return "continuous";
+  if (minutes < S.afternoonEnd) return "continuous";
   if (minutes < S.closeAuctionEnd) return "close-auction";
   return "after-hours";
 }

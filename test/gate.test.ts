@@ -62,6 +62,12 @@ describe("大盘闸门：盘中成交额按节奏折算", () => {
     expect(marketGate({ price: 3926, amountYi: 0 }, 3900, 60, 220).skipped!.join()).toContain("指数成交额缺失");
   });
 
+  test("实时开仓时涨停池未知必须 fail-closed", () => {
+    const g = marketGate({ price: 3926, amountYi: 9000 }, above, null, 220, { live: true });
+    expect(g.allowed).toBe(false);
+    expect(g.reasons.join()).toContain("实时开仓关闭");
+  });
+
   test("收盘后的结论是 idle：不能显示成“闸门开”骗人", () => {
     const idle = marketGate({ price: 3926, amountYi: 9468 }, above, 60, tradingElapsedMin(999)!, { live: false });
     expect(idle.status).toBe("idle");

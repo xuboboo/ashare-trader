@@ -122,6 +122,12 @@ export const config = {
   /** 券商通道（QMT sidecar）。默认指向本机；sidecar 决定 mock/dry/live，本进程绝不自动下单。 */
   qmtSidecarUrl: env("QMT_SIDECAR_URL", "http://127.0.0.1:3011")!,
   qmtToken: env("QMT_TOKEN", "")!,
+  /**
+   * 真实/sidecar 委托总开关，默认关闭。
+   * PAPER=true 时无论此项如何都禁止 POST /broker/order；只有明确设置
+   * PAPER=false 且 BROKER_SUBMIT_ENABLED=true 才允许人工推单。
+   */
+  brokerSubmitEnabled: bool("BROKER_SUBMIT_ENABLED"),
 
   /** 时段（Asia/Shanghai 本地分钟数） */
   session: {

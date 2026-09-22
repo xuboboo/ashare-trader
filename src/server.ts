@@ -78,6 +78,11 @@ export function startServer(engine: Engine) {
       if (pathname === "/broker" && req.method === "GET")
         return json({ sidecarUrl: config.qmtSidecarUrl, ...(await qmt.status()) });
       if (pathname === "/broker/order" && req.method === "POST") {
+        if (config.paper || !config.brokerSubmitEnabled) {
+          return json({
+            error: "broker submit 已关闭：需要 PAPER=false 且 BROKER_SUBMIT_ENABLED=true",
+          }, 409);
+        }
         const body = ((await req.json().catch(() => null)) ?? {}) as { signalId?: string; confirm?: string; force?: boolean };
         if (body.confirm !== "SUBMIT") return json({ error: '需要 body {"signalId":"...","confirm":"SUBMIT"}；这是真实委托方向的开关' }, 400);
         const o = engine.pendingOrders.find((x) => x.signalId === body.signalId);

@@ -12,11 +12,11 @@ describe("交易时段", () => {
     expect(phaseOf("2026-09-18", M(9, 25), true)).toBe("no-cancel");
     expect(phaseOf("2026-09-18", M(9, 29), true)).toBe("no-cancel");
     expect(phaseOf("2026-09-18", M(9, 30), true)).toBe("continuous");
-    expect(phaseOf("2026-09-18", M(11, 30), true)).toBe("continuous");
+    expect(phaseOf("2026-09-18", M(11, 30), true)).toBe("lunch");
     expect(phaseOf("2026-09-18", M(11, 31), true)).toBe("lunch");
     expect(phaseOf("2026-09-18", M(12, 59), true)).toBe("lunch");
     expect(phaseOf("2026-09-18", M(13, 0), true)).toBe("continuous");
-    expect(phaseOf("2026-09-18", M(14, 57), true)).toBe("continuous");
+    expect(phaseOf("2026-09-18", M(14, 57), true)).toBe("close-auction");
     expect(phaseOf("2026-09-18", M(14, 58), true)).toBe("close-auction");
     expect(phaseOf("2026-09-18", M(15, 0), true)).toBe("after-hours");
     expect(phaseOf("2026-09-18", M(3, 0), true)).toBe("pre-open");

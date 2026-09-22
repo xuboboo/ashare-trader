@@ -23,7 +23,7 @@ import { fetchIndexDaily, fetchIndex, fetchTickTrades, fetchZtPool, fetchSnapsho
 import { riskBrake, type RiskBrake } from "./risk";
 import { bj, canTrade, hhmmOf, liveQuotes, phaseOf, type Phase, sessionNow, tradingElapsedMin } from "./session";
 import { Book, makeFill, round2, writeFileAtomic, type Fill } from "./state";
-import { cannotAffordLot, lotAwareHalfQty } from "./symbols";
+import { cannotAffordLot, inScope, lotAwareHalfQty } from "./symbols";
 import { Universe } from "./universe";
 
 /** 决策用的一刻：日期、时间、当日分钟数 */
@@ -348,7 +348,9 @@ export class Engine {
     const ageSec = Math.round(quoteAgeSec(this.snapshots.values()));
     const quotesFresh = ageSec >= 0 && ageSec <= config.quoteStaleSec;
     /** 这一轮的行情能不能拿来做决策与撮合 */
-    const usable = trading && canTrade(phase) && ok > 0 && quotesFresh;
+    // eodOnly 是实时链路降级开关，降级期间只能观察/复盘，不能把旧快照
+    // 当成可下单行情。显式 fail-closed，避免故障后的短窗口继续注册新单。
+    const usable = trading && !this.eodOnly && canTrade(phase) && ok > 0 && quotesFresh;
 
     // ---- 大盘闸门 ----
     this.indexMa5 = this.indexBars.length >= 5 ? (ma5CloseBefore(this.indexBars, clock.date) ?? null) : this.indexMa5;
@@ -921,16 +923,34 @@ export class Engine {
     time?: string;
     note?: string;
   }): Promise<Fill> {
+    if (!/^\d{6}$/.test(args.code)) throw new Error("code 需要 6 位数字");
+    if (!inScope(args.code)) throw new Error(`代码不在本系统交易范围：${args.code}`);
+    if (!Number.isInteger(args.qty) || args.qty <= 0) throw new Error("qty 必须是正整数");
+    if (args.side === "buy" && args.qty % 100 !== 0) throw new Error("买入 qty 必须是 100 的整数倍");
+    if (args.price !== undefined && (!Number.isFinite(args.price) || args.price <= 0)) throw new Error("price 必须为正数");
+    if (args.price !== undefined && Math.abs(args.price * 100 - Math.round(args.price * 100)) > 1e-7)
+      throw new Error("price 必须精确到 0.01 元");
+
     const clock = clockNow();
     const sn = this.snapshots.get(args.code);
     const name = sn?.name ?? this.universe.nameOf(args.code);
     const price = args.price ?? sn?.price ?? 0;
     if (!(price > 0)) throw new Error(`不知道 ${args.code} 的价格，请显式给 price`);
+    if (Math.abs(price * 100 - Math.round(price * 100)) > 1e-7) throw new Error("price 必须精确到 0.01 元");
+
+    const matched = args.signalId ? this.pending.get(args.signalId) : undefined;
+    if (matched && (matched.code !== args.code || matched.side !== args.side))
+      throw new Error("signalId 与 code/side 不匹配");
+    if (args.side === "sell") {
+      const position = this.book.positions.get(args.code);
+      const sellable = position?.sellable ?? 0;
+      if (args.qty > sellable) throw new Error(`卖出数量超过 T+1 可卖数量：${args.qty} > ${sellable}`);
+      if (args.qty >= 100 && args.qty % 100 !== 0) throw new Error("卖出 qty 必须是 100 的整数倍（零股只能作为不足 100 股的残余单）");
+    }
     const b1 = sn?.bids[0]?.p ?? 0;
     const a1 = sn?.asks[0]?.p ?? 0;
     // 先找到它对应的那张建议单：回填的真实成交必须沿用建议单算好的止损线（含 ATR 口径），
     // 否则“人工回填”这一条路会把 STOP_MODE 弄成装饰。
-    const matched = args.signalId ? this.pending.get(args.signalId) : undefined;
     const fill = makeFill({
       code: args.code,
       name,

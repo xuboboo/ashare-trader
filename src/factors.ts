@@ -231,7 +231,14 @@ export function marketGate(
       reasons.push(`涨停仅 ${ztCount} 家 < 此时应达 ${ztThreshold} 家，情绪冰点`);
     }
   } else {
-    skipped.push(`涨停家数未采集（本项否决未生效，当前应达 ${Math.max(1, Math.ceil(ZT_ICE_AGE * paceRatio))} 家）`);
+    const needed = Math.max(1, Math.ceil(ZT_ICE_AGE * paceRatio));
+    skipped.push(`涨停家数未采集（本项否决未生效，当前应达 ${needed} 家）`);
+    // 盘中实时开仓时，关键情绪闸门未知必须 fail-closed；离线回测/盘前
+    // 仍保留原语义，并通过 skipped 明确暴露缺口。
+    if (ctx.live) {
+      allowed = false;
+      reasons.push(`涨停家数未知，实时开仓关闭（当前应达 ${needed} 家）`);
+    }
   }
 
   if (allowed) reasons.push(`上证 ${index.price.toFixed(2)} (${index.amountYi.toFixed(0)} 亿) 闸门通过`);
