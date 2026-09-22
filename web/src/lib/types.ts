@@ -111,6 +111,11 @@ export interface Totals {
   pnlPct: number;
   exposurePct: number;
   fills: number;
+  /** 券商 App 口径当日盈亏：今日权益 − 昨收定格的日初权益（含持仓浮动变动） */
+  dayPnlCny: number;
+  dayPnlPct: number;
+  /** 今日卖出成交已实现的盈亏合计（已扣费） */
+  todayRealized: number;
 }
 
 export interface TickEvent {

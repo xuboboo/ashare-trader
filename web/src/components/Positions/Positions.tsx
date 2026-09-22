@@ -5,12 +5,15 @@ import type { PositionView, Totals } from "@/lib/types";
 
 /** 持仓：可卖 / 今日买入冻结分列，T+1 一眼看得见。无外框，只有发丝横线。 */
 export default function Positions({ positions, totals }: { positions: PositionView[]; totals: Totals | null }) {
+  const unrealized = totals?.unrealized ?? 0;
   return (
     <section className="section">
       <div className="head">
         <h2>持仓</h2>
         <span className="hint">
-          {totals ? `现金 ${fmtCny(totals.cash)} · 仓位 ${fmtPct(totals.exposurePct * 100, 0)} · 已实现 ${fmtCny(totals.realized)}` : ""}
+          {totals
+            ? `现金 ${fmtCny(totals.cash)} · 仓位 ${fmtPct(totals.exposurePct * 100, 0)} · 浮动合计 ${unrealized >= 0 ? "+" : ""}${fmtCny(unrealized)} · 已实现 ${fmtCny(totals.realized)}`
+            : ""}
         </span>
       </div>
       <table>

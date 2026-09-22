@@ -5,6 +5,10 @@ import { fmtCny, fmtInt, fmtPct, fmtPrice } from "@/lib/format";
 import { API_TOKEN, API_URL } from "@/lib/useFeed";
 import type { Fill, Totals } from "@/lib/types";
 
+/** A 股记账口径：红涨绿跌，带符号金额。 */
+const signed = (x: number) => `${x >= 0 ? "+" : ""}${fmtCny(x)}`;
+const pnlCls = (x: number) => (x > 0 ? "up" : x < 0 ? "down" : "muted");
+
 async function post<T>(path: string, body?: unknown): Promise<T> {
   const r = await fetch(`${API_URL}${path}`, {
     method: "POST",
@@ -85,7 +89,16 @@ export default function Ledger({ fillCount, onError }: { fillCount: number; onEr
       <div className="head">
         <h2>成交与账本</h2>
         <span className="hint">
-          {totals ? `现金 ${fmtCny(totals.cash)} · 已实现 ${fmtCny(totals.realized)} · 权益 ${fmtCny(totals.equity)}` : ""}
+          {totals ? (
+            <>
+              当日盈亏 <b className={pnlCls(totals.dayPnlCny)}>{signed(totals.dayPnlCny)} ({fmtPct(totals.dayPnlPct * 100, 2)})</b>
+              {" · 今日已实现 "}<b className={pnlCls(totals.todayRealized)}>{signed(totals.todayRealized)}</b>
+              {" · 持仓浮动 "}<b className={pnlCls(totals.unrealized)}>{signed(totals.unrealized)}</b>
+              {" · 累计已实现 "}{fmtCny(totals.realized)}
+              {" · 现金 "}{fmtCny(totals.cash)}
+              {" · 权益 "}{fmtCny(totals.equity)}
+            </>
+          ) : ""}
         </span>
         <span className="spacer" />
         <button className="btn" onClick={() => void reset()} disabled={busy || fills.length === 0}>

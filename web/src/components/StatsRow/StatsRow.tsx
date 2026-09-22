@@ -37,6 +37,8 @@ export default function StatsRow({
   const idx = latest?.index ?? null;
   const pnl = t?.pnlCny ?? 0;
   const cls = pnl > 0 ? "up" : pnl < 0 ? "down" : "muted";
+  const dayPnl = t?.dayPnlCny ?? 0;
+  const dayCls = dayPnl > 0 ? "up" : dayPnl < 0 ? "down" : "muted";
 
   return (
     <div className="stats">
@@ -49,6 +51,9 @@ export default function StatsRow({
       </span>
       <span className="stat">
         权益<b>{t ? fmtCny(t.equity) : DASH}</b>
+      </span>
+      <span className="stat">
+        当日盈亏<b className={dayCls}>{t ? `${dayPnl >= 0 ? "+" : ""}${fmtCny(dayPnl)} (${fmtPct(t.dayPnlPct * 100, 2)})` : DASH}</b>
       </span>
       <span className="stat">
         盈亏<b className={cls}>{t ? `${fmtCny(pnl)} (${fmtPct(t.pnlPct * 100, 2)})` : DASH}</b>

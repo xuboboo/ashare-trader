@@ -392,6 +392,12 @@ export class Book {
     const cash = this.cash;
     const equity = round2(cash + marketValue);
     const pnlCny = round2(equity - this.initialCash);
+    // 券商 App 口径的"当日盈亏"：今日权益 − 昨收定格的日初权益（含持仓浮动变动）。
+    // dayStartEquity 在日切那一刻用昨收价定格，正好是昨日收市权益。
+    const dayPnlCny = round2(equity - this.dayStartEquity);
+    const todayRealized = round2(
+      this.fills.reduce((s, f) => (f.date === this.lastDate && f.realizedPnl !== undefined ? s + f.realizedPnl : s), 0),
+    );
     return {
       positions: this.positions.size,
       cash,
@@ -404,6 +410,9 @@ export class Book {
       pnlPct: this.initialCash > 0 ? pnlCny / this.initialCash : 0,
       exposurePct: equity > 0 ? marketValue / equity : 0,
       fills: this.fills.length,
+      dayPnlCny,
+      dayPnlPct: this.dayStartEquity > 0 ? dayPnlCny / this.dayStartEquity : 0,
+      todayRealized,
     };
   }
 
