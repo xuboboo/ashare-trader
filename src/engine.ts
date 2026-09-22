@@ -10,7 +10,7 @@
 import { config } from "./config";
 import { loadAtrMap } from "./atr";
 import { stopCounterfactual, summarizeStopCounterfactuals, type StopCounterfactual } from "./exit";
-import { mkdir } from "node:fs/promises";
+import { appendFile, mkdir } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { TradingCalendar } from "./calendar";
 import { defaultFactorParams, featuresFromSnapshot, gateLabel, ma5CloseBefore, marketGate, scoreStock, type FactorParams, type Gate, type Scored } from "./factors";
@@ -108,6 +108,8 @@ export class Engine {
   private preBuyDate = "";
   /** 上一次盘中买入决策时刻（epoch ms），配合 DECIDE_EVERY_MS 控制节奏 */
   private lastBuyMs = 0;
+  /** 上一次真正开新仓的时刻（epoch ms）：两笔新仓之间强制隔 minOpenGapMs，防同一分钟无脑冲多只 */
+  private lastOpenMs = 0;
   /** 上一轮的可买候选代码集（事件触发的比较基准） */
   private lastEligibleKey = "";
   /** Jev 卖出决策节奏；买卖都必须留下真实调用 trace。 */
@@ -193,6 +195,40 @@ export class Engine {
    */
   private pendingFile(): string {
     return join(config.dataDir, "pending.json");
+  }
+
+  /** Jev-vs-随机对照实验的原始决策流水（只旁路追加，不影响交易）。 */
+  private journalFile(): string {
+    return join(config.dataDir, "jev-journal.jsonl");
+  }
+
+  private async appendJournal(entry: {
+    date: string; time: string; model: string; threshold: number; pool: string[]; picked: string[];
+  }): Promise<void> {
+    await appendFile(this.journalFile(), JSON.stringify(entry) + "\n", "utf8");
+  }
+
+  /** Jev 调用成本流水：只记真打了远端/命中缓存的轮次（call!==none），用于"这钱花得值不值"。 */
+  private costFile(): string {
+    return join(config.dataDir, "jev-cost.jsonl");
+  }
+
+  private async appendCost(clock: EngineClock, side: "buy" | "sell", d: Decision | null): Promise<void> {
+    const call = d?.trace?.call;
+    if (!call || call === "none" || !d.trace) return;
+    await appendFile(
+      this.costFile(),
+      JSON.stringify({
+        date: clock.date,
+        time: clock.time,
+        side,
+        model: d.trace.source,
+        call,
+        tokens: d.inputTokens ?? 0,
+        latencyMs: Math.round(d.latencyMs),
+      }) + "\n",
+      "utf8",
+    );
   }
 
   private async loadPending(today: string): Promise<void> {
@@ -427,6 +463,7 @@ export class Engine {
         }
         // ---- 硬安全边界：止损与 T+1。Jev 自主决定其余卖出。----
         const exits = this.exitOrders(clock);
+        for (const o of exits) o.decidedBy = "hard-rule"; // 止损/高开减仓是保护性硬规则，不经模型
         newOrders.push(...exits);
         for (const o of exits) this.pending.set(o.signalId, o);
         if (exits.length) await this.persistPending();
@@ -437,6 +474,11 @@ export class Engine {
           sellDecision = await this.decide(clock, scored, gate, "sell");
           if (!decision) decision = sellDecision;
           this.lastSellMs = sellNow;
+          try {
+            await this.appendCost(clock, "sell", sellDecision);
+          } catch {
+            /* 成本记录失败不影响主流程 */
+          }
           const hasSellOrder = new Set(newOrders.filter((o) => o.side === "sell").map((o) => o.code));
           for (const o of this.pending.values()) if (o.side === "sell") hasSellOrder.add(o.code);
           for (const pick of sellDecision.picks) {
@@ -456,6 +498,8 @@ export class Engine {
               hint,
             );
             if (o) {
+              o.decidedBy = sellDecision?.trace?.source ?? "jev";
+              o.decisionProb = pick.probability;
               newOrders.push(o);
               this.pending.set(o.signalId, o);
             }
@@ -466,11 +510,11 @@ export class Engine {
 
       const nowMs = Date.now();
       // 可买候选集（过硬筛选+买得起）的代码集：与上轮比较，"看情况冲"的事件源
-      const codesKey = scored
+      const eligibleCodes = scored
         .filter((c) => c.rejects.length === 0 && c.score > 0 && !cannotAffordLot(c.features.price, config.sizeCny))
         .map((c) => c.features.code)
-        .sort()
-        .join(",");
+        .sort();
+      const codesKey = eligibleCodes.join(",");
       const codesChanged = codesKey !== this.lastEligibleKey;
       this.lastEligibleKey = codesKey;
       if (
@@ -502,6 +546,28 @@ export class Engine {
           }
         }
 
+        // Jev-vs-随机对照实验的原始记录：只要真调了模型（非 hard-rule 跳过）就把“候选池 + Jev 选中”追加落盘。
+        // 哪怕本轮 picked 为空（Jev 决定不买）也要记——那是关键信息。失败静默，绝不拖累交易。
+        try {
+          await this.appendCost(clock, "buy", decision);
+        } catch {
+          /* 成本记录失败不影响主流程 */
+        }
+        if (decision?.trace && decision.trace.source !== "hard-rule" && eligibleCodes.length) {
+          try {
+            await this.appendJournal({
+              date: clock.date,
+              time: clock.time,
+              model: decision.trace.source,
+              threshold: config.jevMinProb,
+              pool: eligibleCodes,
+              picked: (decision.picks ?? []).map((p) => p.code),
+            });
+          } catch {
+            /* 记录失败不影响主流程 */
+          }
+        }
+
         // 盘前预选只出观点；连续竞价与 force（复盘）出建议单
         if (force || (trading && liveQuotes(phase) && usable)) {
           const resting = restingKeys(this.pending);
@@ -514,6 +580,8 @@ export class Engine {
           let buysThisRound = 0;
           for (const pick of decision?.picks ?? []) {
             if (buysThisRound >= config.maxBuysPerRound) break;
+            // 新仓冷却：距上一笔开仓不足 MIN_OPEN_GAP_MS 就不开新仓（一轮只动一个决定，贴近人）。
+            if (!canOpenNewPosition(nowMs, this.lastOpenMs, config.minOpenGapMs)) break;
             const s = scored.find((x) => x.features.code === pick.code);
             if (!s) continue;
             // 同一标的同时只留一张在途买单：决策每 60s 一轮，不去重就会把同一只股堆成几仓
@@ -523,13 +591,18 @@ export class Engine {
             const vetoReason = this.bias?.vetoes[s.features.code];
             const order = makeBuyOrder(s, clock, vetoReason, config.sizeCny, this.atrMap.get(s.features.code));
             if (!order) continue;
+            order.decidedBy = decision?.trace?.source ?? "unknown";
+            order.decisionProb = pick.probability;
             // 资金闸：按"可用资金"判断（现金减去在途买单冻结占用，与券商同口径），
             // 账本不允许被买穿成负数 —— 多张在途单不能再共用同一笔现金
             if (order.amountCny + 50 > availableCash(this.book.cash, this.pending)) continue;
             newOrders.push(order);
             buysThisRound++;
             resting.add(restingKey(order));
-            if (register) this.pending.set(order.signalId, order);
+            if (register) {
+              this.pending.set(order.signalId, order);
+              this.lastOpenMs = nowMs; // 只有真注册成在途单（会开仓）才重置冷却计时
+            }
           }
           if (register && newOrders.length) await this.persistPending();
         }
@@ -852,6 +925,9 @@ export class Engine {
       date: args.date ?? clock.date,
       time: args.time ?? clock.time,
       kind: "manual",
+      // 人工回填的是一笔真实交易：若它对应某张建议单，沿用那张单的决策源（你执行的是谁的信号），否则标 manual
+      decidedBy: matched?.decidedBy ?? "manual",
+      decisionProb: matched?.decisionProb,
       signalId: args.signalId,
       stopPrice: args.side === "buy" ? matched?.stopPrice ?? undefined : undefined,
       slippageBps: sn && sn.price > 0 ? ((price - sn.price) / sn.price) * 10_000 : undefined,
@@ -1137,6 +1213,11 @@ export function buyDecisionDue(a: {
   // 事件触发：可买候选集一变化就在 15 秒内响应（"看情况冲"）；否则按常规节奏
   if (a.codesChanged && a.nowMs - a.lastBuyMs >= 15_000) return true;
   return a.liveNow && a.usable && a.nowMs - a.lastBuyMs >= config.decideEveryMs;
+}
+
+/** 两笔新仓之间是否已过最短间隔。抽成纯函数便于单测（防“同一分钟无脑冲多只”）。 */
+export function canOpenNewPosition(nowMs: number, lastOpenMs: number, gapMs: number): boolean {
+  return nowMs - lastOpenMs >= gapMs;
 }
 
 export function clockNow(d: Date = new Date()): EngineClock {

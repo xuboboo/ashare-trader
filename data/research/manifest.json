@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "dataset": "ashare-research-v2-jev",
+  "dataset": "ashare-daily-2026-09-22",
   "timezone": "Asia/Shanghai",
   "priceBasis": "raw",
   "universe": {
@@ -8,19 +8,19 @@
     "format": "date-json",
     "pointInTime": true,
     "asOfTime": "14:45",
-    "source": "licensed-or-versioned-provider"
+    "source": "record-research-minutes/tencent-l1/top-amount-at-14:45"
   },
   "daily": {
-    "path": "daily-raw",
+    "path": "daily",
     "format": "code-json",
     "pointInTime": true,
-    "source": "licensed-or-versioned-provider"
+    "source": "eastmoney-push2his/fqt=0"
   },
   "minutes": {
-    "path": "minutes-1m",
+    "path": "minutes",
     "format": "date-code-json",
     "intervalMinutes": 1,
-    "source": "licensed-or-versioned-provider"
+    "source": "self-recorded/tencent-l1"
   },
   "execution": {
     "entryTime": "14:45",
@@ -34,8 +34,17 @@
     "censoring": "right"
   },
   "splits": {
-    "train": { "from": "2019-01-01", "to": "2023-12-31" },
-    "validation": { "from": "2024-01-01", "to": "2024-12-31" },
-    "test": { "from": "2025-01-01", "to": "2026-09-30" }
+    "train": {
+      "from": "2025-06-16",
+      "to": "2026-03-24"
+    },
+    "validation": {
+      "from": "2026-03-25",
+      "to": "2026-06-26"
+    },
+    "test": {
+      "from": "2026-06-29",
+      "to": "2026-09-22"
+    }
   }
 }

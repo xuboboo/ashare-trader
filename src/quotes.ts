@@ -379,6 +379,31 @@ export const fetchIndexDaily = (limit = 60): Promise<DailyBar[]> => fetchDailyBy
 export const fetchDaily = (code: string, limit = 250): Promise<DailyBar[]> =>
   fetchDailyBySecid(eastmoneySecid(code), limit);
 
+/**
+ * 原始（不复权，fqt=0）日线 —— 研究协议 priceBasis=raw 专用。
+ *
+ * 不能复用 fetchDaily：那是前复权，会把历史成交价按后来的除权往下修，
+ * 14:45 用这种价当买入价等于凭空多算了跌幅。研究侧的成交价、市值、换手
+ * 全都依赖不复权原值，所以单独走 fqt=0。
+ *
+ * 只认东财源：腾讯/新浪兜底会给 amountEst（用均价*量估的成交额），
+ * 而 loadDailyBars 明确拒收 amountEst 行。宁可这里直接抛错、让采集脚本跳过该票，
+ * 也不要塞一条"看着像真的"的估值进 raw 池子。
+ */
+export async function fetchRawDaily(code: string, limit = 500): Promise<DailyBar[]> {
+  const url =
+    `https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${eastmoneySecid(code)}` +
+    `&klt=101&fqt=0&lmt=${limit}&end=20500101&fields1=f1,f2,f3,f4,f5,f6` +
+    `&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61`;
+  const j = await httpJson<{ data?: { klines?: string[] } }>(url, {
+    referer: "https://quote.eastmoney.com/",
+    tries: 3,
+  });
+  const bars = parseKlines(j?.data?.klines ?? []);
+  if (!bars.length) throw new Error(`raw 日线为空 (${code})`);
+  return bars;
+}
+
 /** 股票池：全市场按成交额降序，取前 N 且在交易范围内的主板/创业板。 */
 export async function fetchTopByAmount(count: number): Promise<{ code: string; name: string; amountYuan: number }[]> {
   const out: { code: string; name: string; amountYuan: number }[] = [];

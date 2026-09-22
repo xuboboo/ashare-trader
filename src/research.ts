@@ -27,6 +27,7 @@ export interface ResearchManifest {
     path: string;
     format: "date-json";
     pointInTime: true;
+    asOfTime: "14:45";
     source: string;
   };
   daily: {
@@ -63,6 +64,7 @@ export interface ResearchUniverseEntry {
   code: string;
   name: string;
   active: boolean;
+  rank?: number;
   listedDate?: string;
   delistedDate?: string;
   floatShares?: number;
@@ -73,7 +75,9 @@ export interface ResearchUniverseEntry {
 
 export interface ResearchUniverseSnapshot {
   date: string;
+  asOf: "14:45";
   source: string;
+  capturedAt?: number;
   entries: ResearchUniverseEntry[];
 }
 
@@ -108,6 +112,7 @@ export interface ResearchInspection {
   manifest: ResearchManifest | null;
   errors: string[];
   universeSnapshots: number;
+  invalidUniverseSnapshots: number;
   dailyFiles: number;
   minuteDateDirs: number;
   minuteFiles: number;
@@ -146,7 +151,8 @@ export function validateResearchManifest(raw: unknown): string[] {
   if (typeof m?.dataset !== "string" || !m.dataset.trim()) errors.push("dataset 必须是非空字符串");
   if (m?.timezone !== "Asia/Shanghai") errors.push("timezone 必须是 Asia/Shanghai");
   if (m?.priceBasis !== "raw") errors.push("priceBasis 必须是 raw，禁止把复权价当成交价");
-  if (!m?.universe?.pointInTime || m.universe.format !== "date-json") errors.push("universe 必须是 point-in-time date-json");
+  if (!m?.universe?.pointInTime || m.universe.format !== "date-json" || m.universe.asOfTime !== "14:45")
+    errors.push("universe 必须是 14:45 的 point-in-time date-json");
   if (!m?.daily?.pointInTime || m.daily.format !== "code-json") errors.push("daily 必须标记 point-in-time 且使用 code-json");
   if (m?.minutes?.format !== "date-code-json" || m.minutes.intervalMinutes !== 1)
     errors.push("minutes 必须使用 1 分钟 date-code-json");
@@ -156,6 +162,9 @@ export function validateResearchManifest(raw: unknown): string[] {
     ["minutes.source", m?.minutes?.source],
   ] as const) {
     if (typeof source !== "string" || !source.trim()) errors.push(name + " 必须记录来源和版本");
+  }
+  if (typeof m?.universe?.source === "string" && /reconstructed|bootstrap|eod/i.test(m.universe.source)) {
+    errors.push("universe.source 不能使用全天收盘重建或 bootstrap 数据");
   }
   for (const [name, section] of [
     ["universe.path", m?.universe?.path],
@@ -231,6 +240,7 @@ export async function inspectResearchDataset(dataDir = config.dataDir): Promise<
   }
 
   let universeSnapshots = 0;
+  let invalidUniverseSnapshots = 0;
   let dailyFiles = 0;
   let minuteDateDirs = 0;
   let minuteFiles = 0;
@@ -239,18 +249,32 @@ export async function inspectResearchDataset(dataDir = config.dataDir): Promise<
     const dailyRoot = join(root, manifest.daily.path);
     const minuteRoot = join(root, manifest.minutes.path);
     for await (const f of new Bun.Glob("*.json").scan({ cwd: universeRoot, onlyFiles: true })) {
-      if (validDate(f.replace(/\.json$/, ""))) universeSnapshots++;
+      if (!validDate(f.replace(/\.json$/, ""))) continue;
+      try {
+        const snapshot = await Bun.file(join(universeRoot, f)).json() as Partial<ResearchUniverseSnapshot>;
+        if (snapshot.date !== f.replace(/\.json$/, "") || snapshot.asOf !== "14:45" || !Array.isArray(snapshot.entries)) {
+          invalidUniverseSnapshots++;
+          continue;
+        }
+        universeSnapshots++;
+      } catch {
+        invalidUniverseSnapshots++;
+      }
     }
     for await (const _ of new Bun.Glob("*.json").scan({ cwd: dailyRoot, onlyFiles: true })) dailyFiles++;
-    for await (const f of new Bun.Glob("*").scan({ cwd: minuteRoot, onlyFiles: false })) {
-      if (!f.includes(sep) && !f.includes("/") && !f.includes("\\")) minuteDateDirs++;
+    const minuteDates = new Set<string>();
+    for await (const f of new Bun.Glob("*/*.json").scan({ cwd: minuteRoot, onlyFiles: true })) {
+      minuteFiles++;
+      const date = f.split(/[\\/]/)[0];
+      if (date) minuteDates.add(date);
     }
-    for await (const _ of new Bun.Glob("*/*.json").scan({ cwd: minuteRoot, onlyFiles: true })) minuteFiles++;
+    minuteDateDirs = minuteDates.size;
+    if (invalidUniverseSnapshots > 0) errors.push(`有 ${invalidUniverseSnapshots} 份股票池快照不是 14:45 PIT`);
     if (universeSnapshots === 0) errors.push("没有 point-in-time universe snapshot");
     if (dailyFiles === 0) errors.push("没有 point-in-time raw daily 文件");
     if (minuteDateDirs === 0 || minuteFiles === 0) errors.push("没有分钟级数据文件");
   }
-  return { manifestPath, manifest, errors, universeSnapshots, dailyFiles, minuteDateDirs, minuteFiles };
+  return { manifestPath, manifest, errors, universeSnapshots, invalidUniverseSnapshots, dailyFiles, minuteDateDirs, minuteFiles };
 }
 
 export async function assertResearchReady(dataDir = config.dataDir): Promise<ResearchManifest> {
@@ -267,7 +291,7 @@ export async function loadUniverseSnapshot(date: string, manifest: ResearchManif
   if (!validDate(date)) throw new Error("非法研究日期：" + date);
   const path = join(researchRoot(dataDir), manifest.universe.path, date + ".json");
   const snapshot = (await Bun.file(path).json()) as ResearchUniverseSnapshot;
-  if (snapshot.date !== date || snapshot.source.length === 0 || !Array.isArray(snapshot.entries))
+  if (snapshot.date !== date || snapshot.asOf !== manifest.universe.asOfTime || snapshot.source.length === 0 || !Array.isArray(snapshot.entries))
     throw new Error("股票池快照不符合协议：" + path);
   return snapshot;
 }
@@ -365,4 +389,84 @@ export async function loadMinuteBars(
     previous = b.time;
   }
   return bars;
+}
+
+/**
+ * 从已有 raw 日线重建"逐交易日 point-in-time 股票池"。
+ *
+ * 为什么需要：研究 runner 是按 loader.loadUniverse(date) 逐日取池的，只有今天一份快照时，
+ * 把今天的榜单回放历史 = 用"未来的赢家"选过去（幸存者偏差）。这里改成每一天只用
+ * "当日收盘已可见"的成交额排名选池，买在次日 —— 时点正确。
+ *
+ * 诚实标注的残余偏差（无法用免费日线消除，只能靠 source 字符串显式记录）：
+ *   - 退市股不在候选集里（我们只有当下这一批票的历史），所以仍是"有限幸存者"池；
+ *   - 历史某日是否为 ST 无法还原（只有今天的名字），故当日 active 一律按"有 bar 即可交易"判。
+ * 要彻底消除，需要全市场含退市的日线源（付费）；当前口径是免费能达到的最严 PIT。
+ */
+export interface PitUniverseReconstructOpts {
+  /** 每个交易日取成交额最高的前 N 只 */
+  topN: number;
+  /** code -> 升序 raw 日线（必须已通过 loadDailyBars 的递增/正价校验） */
+  dailyByCode: Map<string, ResearchDailyBar[]>;
+  /** 可选 code -> 名称表（仅供面板展示，不参与排名） */
+  names?: Map<string, string>;
+  /** 写进快照 source 字段，说明这份池子怎么来的、有什么残余偏差 */
+  source: string;
+}
+
+/** 所有出现过的交易日（升序、去重）。 */
+export function collectResearchDates(dailyByCode: Map<string, ResearchDailyBar[]>): string[] {
+  const set = new Set<string>();
+  for (const bars of dailyByCode.values()) for (const b of bars) set.add(b.date);
+  return [...set].sort();
+}
+
+/** 返回 date -> 该日 PIT 股票池快照。空池的日子（全市场无 bar）不会出现在结果里。 */
+export function reconstructPitUniverse(
+  dates: string[],
+  opts: PitUniverseReconstructOpts,
+): Map<string, ResearchUniverseSnapshot> {
+  const { topN, dailyByCode, names, source } = opts;
+  // 预建 code -> (date -> bar) 与 code -> 升序 dates，O(1) 取当日 bar 与昨收
+  const byDate = new Map<string, Map<string, ResearchDailyBar>>();
+  const ordered = new Map<string, string[]>();
+  for (const [code, bars] of dailyByCode) {
+    const m = new Map<string, ResearchDailyBar>();
+    const ds: string[] = [];
+    for (const b of bars) {
+      m.set(b.date, b);
+      ds.push(b.date);
+    }
+    byDate.set(code, m);
+    ordered.set(code, ds);
+  }
+  const codes = [...dailyByCode.keys()];
+  const out = new Map<string, ResearchUniverseSnapshot>();
+
+  for (const date of dates) {
+    type Cand = { code: string; amountYuan: number; prevClose: number };
+    const cands: Cand[] = [];
+    for (const code of codes) {
+      const day = byDate.get(code)?.get(date);
+      if (!day || !(day.amountYuan > 0)) continue; // 当日无成交/无 bar = 不可交易
+      const ds = ordered.get(code)!;
+      const idx = ds.indexOf(date);
+      if (idx <= 0) continue; // 上市首日（无前收）不进池
+      const prev = byDate.get(code)!.get(ds[idx - 1]!);
+      if (!prev || !(prev.close > 0)) continue;
+      cands.push({ code, amountYuan: day.amountYuan, prevClose: prev.close });
+    }
+    if (!cands.length) continue;
+    cands.sort((a, b) => b.amountYuan - a.amountYuan || a.code.localeCompare(b.code));
+    const entries: ResearchUniverseEntry[] = cands.slice(0, topN).map((c) => ({
+      code: c.code,
+      name: names?.get(c.code) ?? "",
+      active: true,
+      prevClose: c.prevClose,
+    }));
+    // 这是收盘后重建的 bootstrap 结果，故意不伪装成 14:45 PIT；
+    // 生产 loader 会拒绝它，真实快照必须由 14:45 现场采集或带历史版本的供应商导出。
+    out.set(date, { date, asOf: "14:45", source, entries });
+  }
+  return out;
 }

@@ -6,7 +6,7 @@ const good = {
   dataset: "test",
   timezone: "Asia/Shanghai",
   priceBasis: "raw",
-  universe: { path: "universe", format: "date-json", pointInTime: true, source: "test" },
+  universe: { path: "universe", format: "date-json", pointInTime: true, asOfTime: "14:45", source: "test" },
   daily: { path: "daily-raw", format: "code-json", pointInTime: true, source: "test" },
   minutes: { path: "minutes-1m", format: "date-code-json", intervalMinutes: 1, source: "test" },
   execution: { entryTime: "14:45", entryPrice: "ask", exitPrice: "bid", maxBarAgeSeconds: 60, decisionIntervalMinutes: 1 },

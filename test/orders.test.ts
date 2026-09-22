@@ -148,6 +148,26 @@ describe("纸面撮合（保守口径）", () => {
     expect(fill.price).toBe(10.51); // last 10.5 + 1 tick，被限价钳住
   });
 
+  test("决策来源戳从挂单透传到成交，保证“谁下的单”可审计", () => {
+    // engine 在创建买单后盖上 decidedBy/decisionProb；撮合出的 fill 必须原样携带
+    const o = makeBuyOrder(scored(), clock, undefined, 50_000)!;
+    o.decidedBy = "jev";
+    o.decisionProb = 0.62;
+    const snap = mkSnap({ price: 10.51, low: 10.4, high: 10.6 });
+    const fill = tryPaperFill(o, snap, clock)!;
+    expect(fill.decidedBy).toBe("jev");
+    expect(fill.decisionProb).toBe(0.62);
+    // 没盖戳的旧口径：fill 不凭空造一个来源（保持 undefined = 修复前/unknown）
+    const plain = makeBuyOrder(scored(), clock, undefined, 50_000)!;
+    const fill2 = tryPaperFill(plain, snap, clock)!;
+    expect(fill2.decidedBy).toBeUndefined();
+    // 硬规则卖单：engine 会盖 hard-rule，这里直接验证透传链
+    plain.decidedBy = "hard-rule";
+    const fill3 = tryPaperFill(plain, snap, clock)!;
+    expect(fill3.decidedBy).toBe("hard-rule");
+    expect(fill3.decisionProb).toBeUndefined();
+  });
+
   test("T+1：今日买入的仓位不会被要求卖出", () => {
     const book = new Book(200_000);
     book.rollover("2026-09-18");

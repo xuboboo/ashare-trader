@@ -33,6 +33,10 @@ export interface Fill {
   amount: number;
   costs: Costs;
   kind: "paper" | "manual";
+  /** 决策来源：哪个脑子下的这单（与后端 state.ts DecisionSource 同表） */
+  decidedBy?: "jev" | "factor" | "local" | "hard-rule" | "manual" | "unknown";
+  /** 驱动这笔的模型概率 */
+  decisionProb?: number;
   signalId?: string;
   realizedPnl?: number;
   /** 卖出成交那一刻的成本价快照（盈亏比例的分母口径） */
@@ -63,6 +67,10 @@ export interface SuggestedOrder {
   costBps: number;
   warn: string | null;
   reason: string;
+  /** 这张在途单由哪个决策源下达（jev/factor/local/hard-rule/manual）；旧记录无此字段 */
+  decidedBy?: "jev" | "factor" | "local" | "hard-rule" | "manual" | "unknown";
+  /** 驱动这张单的模型概率 */
+  decisionProb?: number;
   rejectReason: string | null;
   score: number;
   status: OrderStatus;

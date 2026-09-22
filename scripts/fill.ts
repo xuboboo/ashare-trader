@@ -124,6 +124,7 @@ async function main() {
     date: now.date,
     time: now.time,
     kind: "manual",
+    decidedBy: "manual",
     signalId,
     note,
   });

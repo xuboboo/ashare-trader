@@ -8,7 +8,7 @@ const manifest: ResearchManifest = {
   dataset: "runner-test",
   timezone: "Asia/Shanghai",
   priceBasis: "raw",
-  universe: { path: "universe", format: "date-json", pointInTime: true, source: "fixture" },
+  universe: { path: "universe", format: "date-json", pointInTime: true, asOfTime: "14:45", source: "fixture" },
   daily: { path: "daily-raw", format: "code-json", pointInTime: true, source: "fixture" },
   minutes: { path: "minutes-1m", format: "date-code-json", intervalMinutes: 1, source: "fixture" },
   execution: { entryTime: "14:45", entryPrice: "ask", exitPrice: "bid", maxBarAgeSeconds: 60, decisionIntervalMinutes: 1 },
@@ -51,6 +51,7 @@ const bar = (date: string, time: string, over: Partial<ResearchMinuteBar> = {}):
 
 const universe = (date: string): ResearchUniverseSnapshot => ({
   date,
+  asOf: "14:45",
   source: "fixture",
   entries: [{ code: "600000", name: "测试股份", active: true, prevClose: 10, mcapYi: 100, floatMcapYi: 80 }],
 });

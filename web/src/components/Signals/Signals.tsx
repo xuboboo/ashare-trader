@@ -7,6 +7,16 @@ import type { BrokerStatus, SuggestedOrder } from "@/lib/types";
 
 const rowKey = (o: SuggestedOrder) => `${o.signalId}@${o.date} ${o.time}`;
 
+/** 在途单的决策来源：成交前就能看见“这单是谁下的”。 */
+const SRC: Record<string, string> = {
+  jev: "Jev",
+  factor: "因子",
+  local: "本地",
+  "hard-rule": "硬规则",
+  manual: "人工",
+  unknown: "未标注",
+};
+
 interface Props {
   allOrders: SuggestedOrder[];
   onFilled: () => void;
@@ -124,7 +134,13 @@ export default function Signals({ allOrders, onFilled, broker }: Props) {
                   {o.costBps.toFixed(1)}bp <span className="muted">/ {fmtCny(o.costCny)}</span>
                 </td>
                 <td>{o.stopPrice ? fmtPrice(o.stopPrice) : "—"}</td>
-                <td className="why">{o.reason}</td>
+                <td className="why">
+                  <span className="muted">
+                    {SRC[o.decidedBy ?? "unknown"] ?? "未标注"}
+                    {o.decisionProb != null ? ` ${Math.round(o.decisionProb * 100)}%` : ""}
+                  </span>{" "}
+                  {o.reason}
+                </td>
                 <td>
                   <span className="acts">
                     <button className="btn" onClick={() => copy(orderLine(o), rowKey(o))}>

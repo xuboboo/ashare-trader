@@ -9,6 +9,16 @@ import type { Fill, Totals } from "@/lib/types";
 const signed = (x: number) => `${x >= 0 ? "+" : ""}${fmtCny(x)}`;
 const pnlCls = (x: number) => (x > 0 ? "up" : x < 0 ? "down" : "muted");
 
+/** 成交的决策来源（谁下的单）：一眼区分 Jev / 硬规则 / 旧记录未标注。 */
+const DECIDED: Record<string, string> = {
+  jev: "Jev",
+  factor: "因子",
+  local: "本地",
+  "hard-rule": "硬规则",
+  manual: "人工",
+  unknown: "未标注",
+};
+
 async function post<T>(path: string, body?: unknown): Promise<T> {
   const r = await fetch(`${API_URL}${path}`, {
     method: "POST",
@@ -149,7 +159,12 @@ export default function Ledger({ fillCount, onError }: { fillCount: number; onEr
                       ? `${fmtCny(f.realizedPnl)}${f.realizedPnlPct !== undefined ? ` ${fmtPct(f.realizedPnlPct, 2)}` : ""}`
                       : "—"}
                   </td>
-                  <td className="txt muted">{f.kind === "manual" ? "人工回填" : "影子"}</td>
+                  <td className="txt muted">
+                    {f.kind === "manual" ? "人工回填" : "影子"}
+                    {f.decidedBy
+                      ? ` · ${DECIDED[f.decidedBy] ?? f.decidedBy}${f.decisionProb != null ? ` ${Math.round(f.decisionProb * 100)}%` : ""}`
+                      : " · 旧记录未标注"}
+                  </td>
                   <td className="why">{f.note ?? ""}</td>
                   <td>
                     <button className="btn" onClick={() => void remove(f)} disabled={busy}>

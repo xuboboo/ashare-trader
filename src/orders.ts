@@ -7,7 +7,7 @@ import { buyCosts, minCommissionWarn, sellCosts, slipFillPrice } from "./costs";
 import { stopLevel } from "./exit";
 import type { Scored } from "./factors";
 import type { Level, Snapshot, TickTrade } from "./quotes";
-import { makeFill, round2, type Fill, type Position } from "./state";
+import { makeFill, round2, type DecisionSource, type Fill, type Position } from "./state";
 import { sharesForBudget, tickPrice, type Side } from "./symbols";
 
 export type OrderStatus = "pending" | "filled" | "expired" | "cancelled" | "rejected";
@@ -48,6 +48,10 @@ export interface SuggestedOrder {
   fill: Fill | null;
   /** 已成交的累计股数（部分成交时用）；qty 是尚未成交的余量 */
   filledQty?: number;
+  /** 这张单由哪个决策源下达（由 engine 在创建后盖上）；随成交落盘，保证"谁下的单"可审计 */
+  decidedBy?: DecisionSource;
+  /** 驱动这张单的模型概率；硬规则/人工为空 */
+  decisionProb?: number;
   /** 挂单生效后的现价区间（不含挂单前的全天历史）。L1 只有 3s 切片，这就是能做到的粒度。 */
   seenLow: number;
   seenHigh: number;
@@ -306,6 +310,8 @@ export function tryPaperFill(order: SuggestedOrder, snap: Snapshot, clock: Clock
           stopPrice: order.stopPrice ?? undefined,
           stopFixed: order.stopFixed,
           stopAtr: order.stopAtr,
+          decidedBy: order.decidedBy,
+          decisionProb: order.decisionProb,
           slippageBps: order.priceRef > 0 ? ((px - order.priceRef) / order.priceRef) * 10_000 : 0,
           spreadBps: spreadBpsOf(snap),
           note:
@@ -334,6 +340,8 @@ export function tryPaperFill(order: SuggestedOrder, snap: Snapshot, clock: Clock
       stopPrice: order.stopPrice ?? undefined,
       stopFixed: order.stopFixed,
       stopAtr: order.stopAtr,
+      decidedBy: order.decidedBy,
+      decisionProb: order.decisionProb,
       slippageBps: order.priceRef > 0 ? ((level - order.priceRef) / order.priceRef) * 10_000 : 0,
       spreadBps: spreadBpsOf(snap),
       note: `排队成交 ${tapeQty} 股 @ ${level}：挂价上对手主动成交 ${tapeVolume(order, tape, buy, level)} 股（最后排队假设），余量继续挂着`,
@@ -357,6 +365,8 @@ export function tryPaperFill(order: SuggestedOrder, snap: Snapshot, clock: Clock
       stopPrice: order.stopPrice ?? undefined,
       stopFixed: order.stopFixed,
       stopAtr: order.stopAtr,
+      decidedBy: order.decidedBy,
+      decisionProb: order.decisionProb,
       slippageBps: order.priceRef > 0 ? ((px - order.priceRef) / order.priceRef) * 10_000 : 0,
       note: "盘口缺失：按 last±tick 兜底成交（未校盘口深度）",
     });

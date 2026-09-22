@@ -8,6 +8,8 @@ import { config } from "./config";
 import { buyCosts, sellCosts, type Costs } from "./costs";
 import type { Side } from "./symbols";
 
+export type DecisionSource = "jev" | "factor" | "local" | "hard-rule" | "manual" | "unknown";
+
 export interface Fill {
   id: string;
   ts: number;
@@ -49,6 +51,14 @@ export interface Fill {
   slippageBps?: number;
   /** 成交瞬间的盘口价差（(卖一-买一)/中间价，bps）：审计影子成交价真实性的原始证据 */
   spreadBps?: number;
+  /**
+   * 这笔成交由谁决定：jev/factor/local/hard-rule/manual。与 model.ts 的
+   * DecisionTrace.source 同一词表（额外 manual/unknown）。没这个戳时，"这笔到底谁下的"
+   * 只能靠翻 Jev 缓存时间线反推（发生过一次真实审计）。旧记录无此字段 = unknown。
+   */
+  decidedBy?: DecisionSource;
+  /** 驱动这笔的模型概率（Jev/factor 的 pick.probability）；硬规则/人工无此值 */
+  decisionProb?: number;
   note?: string;
 }
 
@@ -453,6 +463,8 @@ export function makeFill(args: {
   stopAtr?: number;
   slippageBps?: number;
   spreadBps?: number;
+  decidedBy?: DecisionSource;
+  decisionProb?: number;
   note?: string;
 }): Fill {
   const amount = round2(args.price * args.qty);
@@ -477,6 +489,8 @@ export function makeFill(args: {
     stopAtr: args.stopAtr,
     slippageBps: args.slippageBps,
     spreadBps: args.spreadBps,
+    decidedBy: args.decidedBy,
+    decisionProb: args.decisionProb,
     note: args.note,
   };
 }

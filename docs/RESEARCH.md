@@ -12,7 +12,7 @@ data/research/manifest.json 负责声明数据来源、价格口径、执行时�
       daily-raw/600000.json
       minutes-1m/YYYY-MM-DD/600000.json
 
-每个 universe/YYYY-MM-DD.json 必须是该日可见的股票池，不能用今天的成交额排名回填历史。
+每个 universe/YYYY-MM-DD.json 必须是该日 14:45 可见的股票池，并带 `asOf: "14:45"`；不能用今天或收盘后的成交额排名回填历史。
 
 分钟文件必须覆盖：
 
@@ -20,6 +20,8 @@ data/research/manifest.json 负责声明数据来源、价格口径、执行时�
 - T+1 起直到 split 边界或数据集末端的连续分钟，卖出按 bid；
 - 每条记录必须有 OHLC、成交量、成交额、bid/ask 及对应盘口量；
 - 使用未复权成交价。
+
+`data/research` 下的大文件不进入代码仓库；`research:version` 会为 manifest、股票池、日线和分钟文件生成 SHA-256 清单。没有清单、来源版本或 14:45 PIT 快照时，数据不能作为正式研究集。
 
 v2 manifest 的 `execution.decisionIntervalMinutes` 必须为 1，`labels.policy` 必须为 `jev-autonomous`，`labels.censoring` 必须为 `right`。样例 manifest 见 docs/RESEARCH_MANIFEST.example.json。执行：
 

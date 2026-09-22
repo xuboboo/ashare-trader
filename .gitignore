@@ -5,12 +5,22 @@ node_modules
 # 文档里引用的那张表（sweep / 回测输出 / 模型报告）必须能被别人复核，
 # 否则"36 组全不通过"只是一句自述。
 data/*
+!data/research/
+data/research/*
+!data/research/manifest.json
+!data/research/checksums.json
 !data/sweep.tsv
 !data/backtest.tsv
 !data/backtest.txt
 !data/backtest.json
 !data/model.json
 !data/notes.md
+# research 数据集整体本地化；但把"防篡改锚点"入库当证据链：
+# 任何事后补造/篡改都会让重算的 sha256 与已提交的 provenance.json 对不上（git diff 可见）。
+!data/research/
+data/research/*
+!data/research/manifest.json
+!data/research/provenance.json
 test/tmp-*
 *.log
 web/.next
@@ -21,3 +31,7 @@ brokers/qmt-sidecar/qmt_orders.jsonl
 cr.json
 jobs.json
 jobs2.json
+# 计划任务自动生成的本机专属包装（含 bun/repo 绝对路径），不入库
+scripts/.run-accumulate.cmd
+scripts/.run-recorder.cmd
+scripts/.run-engine.cmd
