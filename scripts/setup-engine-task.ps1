@@ -24,7 +24,19 @@ $repo = (Resolve-Path (Join-Path $scriptsDir "..")).Path
 
 $bunCmd = Get-Command bun -ErrorAction SilentlyContinue
 if (-not $bunCmd) { throw "bun not found on PATH. Install bun or set `$bun to an absolute path." }
+
+# Get-Command may resolve to a bun.ps1 shim (npm/hermes style). cmd.exe cannot run a .ps1 from
+# a batch wrapper: it goes through the .ps1 file association, the task reports exit 0, and
+# nothing ever runs. The generated .cmd must therefore point at a real .exe binary.
 $bun = $bunCmd.Source
+if ($bun -notmatch '\.exe$') {
+    $shimDir = Split-Path $bun
+    $candidates = @((Join-Path $shimDir 'bun.exe'), (Join-Path $shimDir 'node_modules\bun\bin\bun.exe'))
+    foreach ($cand in $candidates) {
+        if (Test-Path $cand) { $bun = $cand; break }
+    }
+    if ($bun -notmatch '\.exe$') { throw "bun resolved to a non-exe shim ($bun) and no bun.exe sits next to it. Set `$bun to an absolute bun.exe path." }
+}
 
 $logDir = Join-Path $repo "data"
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
