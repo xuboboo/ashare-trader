@@ -59,11 +59,20 @@ describe("买入决策调度（盘前预选 + 全程节奏）", () => {
     const ran = { ...base, lastBuyMs: 1_000_000 };
     // 20 秒前刚决策过，但有新票冲进区间 → "看情况"立即再决策（20s > 15s 下限）
     expect(buyDecisionDue({ ...ran, codesChanged: true, nowMs: ran.lastBuyMs + 20_000 })).toBe(true);
-    // 候选集没变 → 守 DECIDE_EVERY_MS 节奏（当前 .env 为 15000）
+    // 候选集没变 → 守 DECIDE_EVERY_MS 节奏（具体值随 .env 变，所以只比阈值本身）
     const cad = config.decideEveryMs;
     expect(buyDecisionDue({ ...ran, codesChanged: false, nowMs: ran.lastBuyMs + cad })).toBe(true);
+    expect(buyDecisionDue({ ...ran, codesChanged: false, nowMs: ran.lastBuyMs + cad - 1 })).toBe(false);
     // 事件触发也有 15 秒下限，防 API 哄抢
     expect(buyDecisionDue({ ...ran, codesChanged: true, nowMs: ran.lastBuyMs + 5_000 })).toBe(false);
+  });
+
+  test("事件触发不得绕过行情新鲜度（拿隔夜快照问模型 = 落不了地的单）", () => {
+    const ran = { ...base, lastBuyMs: 1_000_000 };
+    const late = { ...ran, codesChanged: true, nowMs: ran.lastBuyMs + 60_000 }; // 远超 15s 下限
+    expect(buyDecisionDue(late)).toBe(true); // 前提：新鲜时确实会跑
+    expect(buyDecisionDue({ ...late, usable: false })).toBe(false); // 行情不新鲜
+    expect(buyDecisionDue({ ...late, liveNow: false })).toBe(false); // 不在连续竞价
   });
 
   test("force 无视一切节奏（手动 /scan 随时可看一轮决策）", () => {

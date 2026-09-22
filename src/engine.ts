@@ -1241,8 +1241,10 @@ export function buyDecisionDue(a: {
   if (preMarket) return !a.preBuyDone;
   // 开盘稳定期：连续竞价开始后的前 OPEN_DELAY_MIN 分钟不开新仓（退出管理照常）
   if (a.minutes < config.session.morningStart + config.openDelayMin) return false;
-  // 事件触发：可买候选集一变化就在 15 秒内响应（"看情况冲"）；否则按常规节奏
-  if (a.codesChanged && a.nowMs - a.lastBuyMs >= 15_000) return true;
+  // 事件触发：可买候选集一变化就在 15 秒内响应（"看情况冲"），15s 下限防 API 哄抢。
+  // 与常规节奏一样要求行情新鲜：拿隔夜/断流快照去问模型，得到的是一张落不了地的单，
+  // 还会往对照实验的样本里注入不可执行轮次（journal 已会标 executable=false，但白问一次模型）。
+  if (a.codesChanged && a.liveNow && a.usable && a.nowMs - a.lastBuyMs >= 15_000) return true;
   return a.liveNow && a.usable && a.nowMs - a.lastBuyMs >= config.decideEveryMs;
 }
 
