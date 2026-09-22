@@ -52,7 +52,7 @@ export default function Page() {
   if (latest?.quotes.stale) banners.push(`行情已老化 ${latest.quotes.ageSec}s（阈值内才算活价），本轮不出单也不判成交`);
   if (feed.meta?.calendarStale) banners.push("交易日历不可用，按周一~周五猜测交易日");
   if (latest && !latest.tradingDay) banners.push(`非交易日（${latest.date}），下面是最近一个交易日的复盘快照`);
-  if (latest?.decision?.modelFailed) banners.push("模型本轮失败，已按规则层执行");
+  if (latest?.decision?.modelFailed) banners.push("Jev 本轮未完成，已 fail-closed HOLD，未使用 FactorModel");
   if (latest?.risk?.buyBlocked) banners.push(`风控闸：${latest.risk.reasons.join("；")}`);
   if (latest && latest.totals.cash < 0) banners.push(`现金为负（${latest.totals.cash.toFixed(0)} 元）：回填金额超过了本金，请核对是否多记了一笔（可在"成交与账本"区撤销）`);
   if (error) banners.push(`操作未完成：${error}`);

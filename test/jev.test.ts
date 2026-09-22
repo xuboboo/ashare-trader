@@ -65,12 +65,14 @@ describe("Jev 模型接入", () => {
     expect(eligible(state(list), 3_300).map((c) => c.features.code)).toEqual(["002156"]);
   });
 
-  test("没配 key → 降级回规则层并标 modelFailed，但不是不出单", async () => {
+  test("没配 key → fail-closed HOLD，不得降级回 FactorModel", async () => {
     const seen = { calls: 0 };
     const d = await model(fakeAsk({ "002156": 0.99 }, seen), null).decide(state([cand("002156", "甲")]));
     expect(seen.calls).toBe(0);
     expect(d.modelFailed).toBe(true);
-    expect(d.picks.map((p) => p.code)).toEqual(["002156"]); // 规则层结论仍然有效
+    expect(d.picks).toHaveLength(0);
+    expect(d.action).toBe("hold");
+    expect(d.trace?.status).toBe("not-configured");
   });
 
   test("按概率过滤与排序，并把胜率写进理由", async () => {
@@ -81,9 +83,10 @@ describe("Jev 模型接入", () => {
     expect(d.action).toBe("buy");
     expect(d.picks.map((p) => p.code)).toEqual(["603986", "002156"]); // 概率高的在前
     expect(d.picks[0]!.probability).toBeCloseTo(0.81, 6);
-    expect(d.picks[0]!.reasons.some((r) => r.includes("Jev 判定 81%"))).toBe(true);
+    expect(d.picks[0]!.reasons.some((r) => r.includes("Jev 买入判定 81%"))).toBe(true);
     expect(d.inputTokens).toBe(1234);
     expect(d.probabilities.buy + d.probabilities.hold).toBeCloseTo(1, 6);
+    expect(d.trace).toMatchObject({ source: "jev", call: "remote", status: "ok", answerCount: 2 });
   });
 
   test("低于 JEV_MIN_PROB 就不采纳；全部不及格是 hold，不硬凑一单", async () => {
@@ -97,19 +100,40 @@ describe("Jev 模型接入", () => {
     expect(d.probabilities.hold).toBe(1);
   });
 
-  test("调用失败/超时 → 降级规则层，不抛异常打断心跳", async () => {
+  test("调用失败/超时 → fail-closed HOLD，不抛异常打断心跳", async () => {
     const boom: JevAsk = async () => {
       throw new Error("timeout");
     };
     const d = await model(boom).decide(state([cand("002156", "甲")]));
     expect(d.modelFailed).toBe(true);
-    expect(d.picks).toHaveLength(1);
+    expect(d.picks).toHaveLength(0);
+    expect(d.action).toBe("hold");
+    expect(d.trace?.status).toBe("failed");
   });
 
   test("返回里没有可用概率 → 降级，而不是拿 0 当结论", async () => {
     const junk: JevAsk = async () => ({ answers: { q0: { type: "boolean" } as never }, inputTokens: 0 });
     const d = await model(junk).decide(state([cand("002156", "甲")]));
     expect(d.modelFailed).toBe(true);
+    expect(d.picks).toHaveLength(0);
+    expect(d.trace?.status).toBe("invalid-response");
+  });
+
+  test("卖出也走 Jev，而不是 SellAdvisor/FactorModel", async () => {
+    const seen = { calls: 0 };
+    const d = await model(fakeAsk({ "002156": 0.91 }, seen)).decide(
+      state([], {
+        decisionMode: "sell",
+        allowed: { buy: false, sell: true },
+        heldCodes: ["002156"],
+        positions: [{ code: "002156", name: "甲", entry: 10, price: 10.4, unrealizedPct: 4, stop: 9.7, heldDays: 1, sellable: 100 }],
+      }),
+    );
+    expect(seen.calls).toBe(1);
+    expect(d.action).toBe("sell");
+    expect(d.picks.map((p) => p.code)).toEqual(["002156"]);
+    expect(d.probabilitySemantics).toBe("model-prompt");
+    expect(d.trace).toMatchObject({ source: "jev", call: "remote", status: "ok" });
   });
 
   test("同样的 state 命中缓存，不重复计费", async () => {

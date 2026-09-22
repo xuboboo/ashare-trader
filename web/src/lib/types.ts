@@ -83,6 +83,16 @@ export interface Decision {
   late: boolean;
   inputTokens: number;
   modelFailed: boolean;
+  trace?: {
+    source: "jev" | "factor" | "local" | "hard-rule";
+    model: string;
+    call: "remote" | "cache" | "none";
+    status: "ok" | "skipped-hard-rule" | "not-configured" | "failed" | "invalid-response";
+    requestKey?: string;
+    answerCount?: number;
+    inputTokens?: number;
+    reason?: string;
+  };
 }
 
 export interface PositionView {
@@ -152,6 +162,7 @@ export interface TickEvent {
     }[];
   };
   decision: Decision | null;
+  decisions?: { buy?: Decision; sell?: Decision };
   /** 组合级风控闸（日亏损/回撤），只在调用过 decide 的轮次有值 */
   risk: {
     buyBlocked: boolean;

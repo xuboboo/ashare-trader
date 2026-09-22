@@ -41,8 +41,8 @@
 | `costs.ts` | 佣金 `max(5, 0.025%)` 双边、印花税 0.05% 卖出单边、过户费、经手证管、滑点 | 成本是本项目最重要的数字，必须只有一处定义 |
 | `factors.ts` | `StockFeatures`（两口径共同的最小输入）+ `scoreStock()` + `marketGate()` | 见下方"一致性契约" |
 | `exit.ts` | `stopLevel()`（fixed/ATR 封底）与 `nextDayExit()`（次日出场阶梯） | 回测、训练标签、实盘退出三条路必须用同一个函数，否则评的不是同一个策略 |
-| `model.ts` | `FactorModel`（出概率与 picks）、`LlmAdvisory`（日频情绪闸门 + 个股 veto） | LLM 不进热路径，所以它不是 `Model` 而是旁路顾问 |
-| `jev.ts` | `JevModel`：把候选装进一份共享 state，逐只问 boolean，按概率阈值与排序出 picks；失败降级回 `FactorModel` 并标 `modelFailed` | 模型只参与"在合法候选里排序与给胜率"，硬约束仍在代码里；`ask`/`apiKey`/`dataDir` 可注入，因此能离线测试 |
+| `model.ts` | `FactorModel`（兼容/研究用）、`LlmAdvisory`（日频情绪闸门 + 个股 veto） | Jev 全程模式下 FactorModel 不得作为决策降级；每个决策都必须有 trace |
+| `jev.ts` | `JevModel`：买入与可裁量卖出统一调用远端 Jev，返回 `model-prompt` 概率和 `Decision.trace`；失败只 HOLD | 因子只提供硬筛选候选，Jev 决定是否买/卖及卖出价格意图；止损、T+1、强制期限、券商开关仍是硬边界 |
 | `orders.ts` | 建议单生成、`updateResting` 逐轮观察区间、`settlePending` 在途单结算、`tryPaperFill` 影子成交 | 撮合的保守性（对手价、限价钳制、本轮挂的下轮才成交、当日有效、买卖双向）全在这一个可测的入口里 |
 | `state.ts` | `Book`：T+1 `sellable`/`frozen`、买入费用按比例结转、止损线随成交落账、权益曲线、`rebuild()/verify()`、原子持久化 | 账本必须能被回测、CLI 回填、HTTP 回填三条路共用；撤销靠重放而不是反向数学；快照与流水不平就以流水为准重建 |
 | `lock.ts` | 账本单实例锁（`index.ts` / `once.ts` / `fill.ts` 共用） | `data/` 里全是"整份读入再整份写回"的文件，双写必互相覆盖 |
@@ -60,7 +60,8 @@
   bias:   { emotionScore, allowOpen, reason, vetoes, llmFailed, enabled } | null,
   universe, quotes: { ok, fails, stale, eodOnly, quoteDay, ageSec },
   scan:   { scored, rejected, top[{code,name,score,gainPct,volumeRatio,priceVsVwapBps,reasons}] },
-  decision: { action, probabilities{buy,sell,hold}, probabilitySemantics, picks[], latencyMs, late, modelFailed } | null,
+  decision: { action, probabilities{buy,sell,hold}, probabilitySemantics, picks[], latencyMs, late, modelFailed, trace } | null,
+  decisions: { buy?, sell? },                         // 同轮买卖判断分开留证
   orders:   SuggestedOrder[],   // 本轮新产生的建议单
   fills:    Fill[],             // 本轮影子成交
   positions:PositionView[], totals: Totals, note }
@@ -78,11 +79,11 @@
 | 时刻 | 做什么 | 不满足什么就不做 |
 | --- | --- | --- |
 | 09:05 起每日一次 | 调 LLM 出当日 `allowOpen` 与 veto 名单；用最近快照做一次盘前预选（只出观点不出单） | 非交易日 |
-| 09:30–14:57 每轮 | 持仓退出：开盘浮盈减半 → 到点清仓 → 跌破止损 → 跌破分时均线（连续确认） | 行情不新鲜、无可卖数量、该标的已有在途卖单 |
-| 09:30–14:57 每 `DECIDE_EVERY_MS` | 买入决策：全池打分 → 闸门/风控/额度 → top-K 建议单 | 闸门关、额度用完、行情不新鲜、该标的已有在途买单或已持仓 |
+| 09:30–14:57 每轮 | 系统先执行止损/T+1 强制期限；其余持仓卖出由 Jev 判断并可给出价格意图 | 行情不新鲜、无可卖数量、该标的已有在途卖单 |
+| 09:30–14:57 每 `DECIDE_EVERY_MS` | 买入决策：硬筛选 → 闸门/风控/额度 → Jev 逐候选判断 → 建议单 | 闸门关、额度用完、行情不新鲜、该标的已有在途买单或已持仓 |
 | 每轮 | 在途单结算（隔日作废、收盘作废、本轮挂的下轮才成交）+ 盯市 + 心跳事件 | 非当日快照不参与撮合 |
 
-退出评估在整个连续竞价时段只要持仓可卖就每轮跑（不再限 09:30-10:00）。涨停池也在这个窗口里
+卖出评估在整个连续竞价时段只要持仓可卖就按 `DECIDE_EVERY_MS` 跑 Jev（不再使用 SellAdvisor）。涨停池也在这个窗口里
 按决策节奏现采（采到才能当否决项）。`POST /scan` 是人工复盘入口：收盘后可以强制跑一次选股，
 但**不会伪造成交** —— 撮合要求“当日 + 新鲜 + 连续竞价”三个条件同时成立，而且收盘会把当日单作废。
 

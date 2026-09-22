@@ -1,10 +1,28 @@
-/**
- * 决策模型。统一形状：出概率、出 action、记延迟，拿不到结果就是 hold。
- *
- * 硬规定：LLM 不进热路径。LlmAdvisory 只在每天盘前调用一次（情绪闸门 + 个股 veto），
- * tick 级的选择全部由 FactorModel 的确定性打分完成 —— 大模型推理是秒级，
- * 而 A 股这边只有日频节奏对得上。
- */
+/** 决策模型的可审计来源；jev 的 trace 必须说明是远端调用还是缓存。 */
+export interface DecisionTrace {
+  source: "jev" | "factor" | "local" | "hard-rule";
+  model: string;
+  call: "remote" | "cache" | "none";
+  status: "ok" | "skipped-hard-rule" | "not-configured" | "failed" | "invalid-response";
+  requestKey?: string;
+  answerCount?: number;
+  inputTokens?: number;
+  reason?: string;
+}
+
+/** Jev 做卖出判断时看到的持仓状态；硬规则字段只用于边界和风险事实。 */
+export interface HeldPositionInput {
+  code: string;
+  name: string;
+  entry: number;
+  price: number;
+  unrealizedPct: number;
+  stop: number;
+  heldDays: number;
+  sellable: number;
+}
+
+/** 决策模型。买入和卖出都必须返回同一份结构，失败时只能 HOLD。 */
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { config } from "./config";
@@ -19,6 +37,8 @@ export interface Pick {
   probability: number;
   score: number;
   reasons: string[];
+  /** Jev 卖出时的价格意图；0 = 对手价，正数 = 相对现价挂高。 */
+  priceOffsetPct?: number | null;
 }
 
 export interface SignalState {
@@ -35,6 +55,9 @@ export interface SignalState {
   /** 每股 veto 理由（来自 LLM 或本地规则） */
   vetoes: Record<string, string>;
   openSlots: number;
+  /** 未设置时兼容旧测试，生产引擎会显式设置。 */
+  decisionMode?: "buy" | "sell";
+  positions?: HeldPositionInput[];
 }
 
 export interface Decision {
@@ -54,6 +77,8 @@ export interface Decision {
   late: boolean;
   inputTokens: number;
   modelFailed: boolean;
+  /** 证明本轮到底由谁决定、是否真的调用了远端。 */
+  trace?: DecisionTrace;
 }
 
 export interface Model {
@@ -116,6 +141,7 @@ export class FactorModel implements Model {
       late: false,
       inputTokens: 0,
       modelFailed: false,
+      trace: { source: "factor", model: this.name, call: "none", status: "ok" },
     };
   }
 }

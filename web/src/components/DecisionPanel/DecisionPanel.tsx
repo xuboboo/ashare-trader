@@ -42,8 +42,21 @@ export default function DecisionPanel({ event, history, latest, meta, nowMs }: P
   const action = d?.action ?? null;
   const degraded = d?.modelFailed ?? false;
   const probs = d?.probabilities ?? { buy: 0, sell: 0, hold: 0 };
+  const trace = d?.trace;
+  const hardRuleSkip = trace?.source === "hard-rule";
   // 规则层的 probabilities 是打分离 softmax，有 picks 时 buy 恒为 100% —— 那不是胜率，必须标出来
-  const rankShare = (d?.probabilitySemantics ?? "rank-share") === "rank-share";
+  const rankShare = !hardRuleSkip && (d?.probabilitySemantics ?? "rank-share") === "rank-share";
+  const traceLabel = !trace
+    ? "调用证据未知"
+    : trace.source === "jev" && trace.call === "remote" && trace.status === "ok"
+      ? "Jev 远端已调用"
+      : trace.source === "jev" && trace.call === "cache" && trace.status === "ok"
+        ? "Jev 成功缓存（本轮未远端调用）"
+        : trace.source === "jev"
+          ? `Jev ${trace.status} · HOLD`
+          : trace.source === "hard-rule"
+            ? "硬规则短路（未调用模型）"
+            : `${trace.source} · ${trace.status}`;
 
   const headline =
     action === "buy" ? "买入" : action === "sell" ? "卖出" : d ? "观望" : "等待";
@@ -72,7 +85,7 @@ export default function DecisionPanel({ event, history, latest, meta, nowMs }: P
         <h2>模型决策</h2>
         <span className="hint">
           {meta ? `${meta.model} · 每 ${cadence} 一轮` : "等待后端"}
-          {degraded ? " · 已降级规则层" : ""}
+          {` · ${traceLabel}`}
         </span>
       </div>
 
@@ -80,7 +93,7 @@ export default function DecisionPanel({ event, history, latest, meta, nowMs }: P
       <div className="decisionOrder">
         {`> 盘前预选一次；开仓窗口 ${window}，全程按节奏决策。${entryRule}。
 > 普通 A 股 T+1；策略最迟次日 ${exitAt} 清仓。本金 ¥${bankroll} · 单笔上限 ¥${size} · 最多 ${maxPos} 仓 · ${stop}。
-> 卖出只执行硬规则（止损/期限铁律），模型不得干预；Jev 仅可建议提前离场（实验）。`}
+> Jev 全程判断买入与可裁量卖出；止损、T+1、最迟清仓是系统硬边界，不允许模型绕过。`}
       </div>
 
       <div className="decisionLabel" style={{ marginTop: 14 }}>
@@ -114,7 +127,9 @@ export default function DecisionPanel({ event, history, latest, meta, nowMs }: P
 
       {/* 概率语义：别让“100% 买入”冒充胜率 */}
       <div className="muted tiny" style={{ marginTop: 6 }}>
-        {rankShare
+        {hardRuleSkip
+          ? "本轮被系统硬规则短路，未调用模型"
+          : rankShare
           ? "上面是候选间的排序占比（规则层无概率含义），不是胜算"
           : `上面是模型判定的“扣成本后为正”概率（${d?.probabilitySemantics === "calibrated" ? "本地模型，带训练集校准" : "Jev 远端判定，校准未独立验证"}）`}
       </div>
@@ -129,7 +144,7 @@ export default function DecisionPanel({ event, history, latest, meta, nowMs }: P
                   latest.gate.skipped?.length ? ` · 本轮未评估：${latest.gate.skipped.join("、")}` : ""
                 }`
               : `闸门关 · ${latest.gate.reasons.join("；")}`}
-        {degraded ? " · 模型本轮失败，按规则层执行" : ""}
+        {degraded ? " · 本轮未获得 Jev 结果，未使用 FactorModel" : ""}
       </div>
 
       {d && d.picks.length > 0 ? (

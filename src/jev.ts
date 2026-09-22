@@ -1,18 +1,11 @@
 /**
- * JevModel：把 TypeSafe 的 System One 模型 Jev 用作 A 股尾盘买入选股的决策模型。
+ * JevModel：唯一的买卖判断源。
  *
- * Jev 不生成文本：给它一份 state 和若干问题，它并行返回带概率的结构化答案。
- * 所以我们问的问题必须是**可判定的陈述**，而不是"你怎么看这只票"：
- *   "在 14:45 以对手价买入 X，并按规则于次日 10:00 前退出，扣除约 11.6bp 往返成本后本笔期望为正"
- * 返回的 probability 就是该陈述为真的概率（boolean 型问题映射到 TypeSafe 的 noul）。
+ * FactorModel 只负责代码硬筛选后的候选输入，不负责排序结论、不负责概率、不负责降级。
+ * Jev 未配置、远端失败、缓存/回复无效时一律 HOLD，并把原因写进 Decision.trace；
+ * 绝不把 FactorModel 的 rank-share 冒充成 Jev 的 model-prompt 概率。
  *
- * 三条硬约束：
- *  1. 模型看到的 state 与规则层完全相同（同一份 StockFeatures + 同一个成本口径），
- *     不允许给模型额外的"内幕字段"，否则回测/实盘一致性就破了；
- *  2. 大盘闸门、T+1、涨跌停、流动性这些**不交给模型**，仍然是代码里的硬否决；
- *     Jev 只在已经通过筛选的候选里排序并给胜率；
- *  3. 没配 key、超时、返回解析失败 → 立刻降级回 FactorModel，并在事件里标 modelFailed，
- *     绝不让"模型挂了"变成"今天不出单"或"编一个概率"。
+ * 止损、T+1、涨跌停、券商 submit 开关仍是系统安全边界，不交给模型绕过。
  */
 import { experimental_evaluate } from "ai";
 import { createTypeSafeAi } from "@ai-sdk/typesafe-ai";
@@ -21,7 +14,7 @@ import { join } from "node:path";
 import { config } from "./config";
 import { roundTrip } from "./costs";
 import type { Scored } from "./factors";
-import { FactorModel, type Decision, type Model, type Pick, type SignalState } from "./model";
+import type { Decision, DecisionTrace, HeldPositionInput, Model, Pick, SignalState } from "./model";
 import { hhmmOf } from "./session";
 import { cannotAffordLot } from "./symbols";
 
@@ -29,9 +22,9 @@ export interface JevAnswer {
   type: string;
   probability?: number;
   choice?: string;
+  score?: number;
   probabilities?: Record<string, number>;
 }
-
 export interface JevReply {
   answers: Record<string, JevAnswer>;
   inputTokens: number;
@@ -55,26 +48,31 @@ export const defaultAsk: JevAsk = async ({ state, questions, timeoutMs }) => {
   };
 };
 
-/** 只问那些已经通过硬约束的候选；按规则分从高到低取前 N。买不起一手的不浪费提问。 */
+/** 只过滤系统硬否决；score 只用于在超过请求上限时做确定性截断，不是最终排序/概率。 */
 export function eligible(s: SignalState, budgetCny: number = config.sizeCny): Scored[] {
   return s.candidates
     .filter(
       (c) =>
         c.rejects.length === 0 &&
-        c.score > 0 &&
         !cannotAffordLot(c.features.price, budgetCny) &&
         !(c.features.code in s.vetoes),
     )
-    .sort((a, b) => b.score - a.score)
+    .sort((a, b) => b.score - a.score || a.features.code.localeCompare(b.features.code))
     .slice(0, config.jevMaxQuestions);
 }
 
-/** 共享 state：一次请求里所有问题都对着它判定。 */
-export function buildState(s: SignalState, list: Scored[], costBps: number) {
+/** 共享 state：买入候选与卖出持仓在同一次 Jev 请求中各自使用清晰的上下文。 */
+export function buildState(
+  s: SignalState,
+  list: Scored[],
+  costBps: number,
+  positions: HeldPositionInput[] = s.positions ?? [],
+) {
   return {
     market: "A 股 沪深主板 + 创业板",
     date: s.date,
     decideAt: s.time,
+    decisionMode: s.decisionMode ?? "buy",
     holdPeriod: "隔夜，次日 10:00 前必须清仓（T+1）",
     roundTripCostBps: costBps,
     index: s.index,
@@ -90,8 +88,9 @@ export function buildState(s: SignalState, list: Scored[], costBps: number) {
       turnoverPct: Number(c.features.turnoverPct.toFixed(2)),
       amountYi: Number((c.features.amountYuan / 1e8).toFixed(2)),
       distanceToLimitUpBps: Math.round(((c.features.limitUp - c.features.price) / c.features.price) * 10_000),
-      factorScore: Number(c.score.toFixed(2)),
+      preScreenScore: Number(c.score.toFixed(2)),
     })),
+    positions: positions.map((p) => ({ ...p })),
   };
 }
 
@@ -104,21 +103,63 @@ export function buildQuestions(s: SignalState, list: Scored[], costBps: number):
       instructions:
         `在 ${s.date} ${s.time} 以对手价买入 ${c.features.name}(${c.features.code})，` +
         `并按固定规则于次日 ${exitAt} 前退出（高开超 ${config.gapTrimPct}% 先减半、跌破止损即走、到点无条件清仓），` +
-        `在扣除约 ${costBps.toFixed(1)}bp 的往返成本后，这笔交易的收益为正。`,
+        `在扣除约 ${costBps.toFixed(1)}bp 的往返成本后，这笔交易的收益为正。` +
+        `请独立判断该陈述，不要把候选的预筛分数当作概率。`,
     };
   });
   return questions;
 }
 
-export class JevModel implements Model {
-  /** 模型 id 本身就是 "jev-latest"，不要再加前缀 */
-  readonly name = config.jevModelId;
-  private fallback = new FactorModel();
+export function buildSellQuestions(s: SignalState, positions: HeldPositionInput[]): Record<string, unknown> {
+  const exitAt = hhmmOf(config.forceExitMin);
+  const questions: Record<string, unknown> = {};
+  positions.forEach((p, i) => {
+    questions[`q${i}`] = {
+      type: "boolean",
+      instructions:
+        `持仓 ${p.name}(${p.code})：成本 ${p.entry.toFixed(2)} 元，当前可成交价约 ${p.price.toFixed(2)} 元，` +
+        `浮动盈亏 ${p.unrealizedPct.toFixed(2)}%，已持有 ${p.heldDays} 个交易日，止损线 ${p.stop.toFixed(2)} 元。` +
+        `在不违反止损、T+1 与最迟 ${exitAt} 强制清仓规则的前提下，` +
+        `现在按盘口卖出并持有现金，相比继续持有到规则退出，净收益更高的概率是多少？` +
+        `请独立判断，不要把系统硬规则当成可取消的建议。`,
+    };
+    questions[`q${i}px`] = {
+      type: "score",
+      instructions:
+        `若你决定现在卖出 ${p.name}(${p.code})，请给出价格意图：0 = 立即按买一/对手价成交，` +
+        `最高档 = 当前价上方约 ${PX_MAX_PCT}% 挂限价等待更好价格。` +
+        `只表达卖出价格意图，不改变是否卖出的判断。`,
+      criteria: Array.from({ length: PX_LEVELS }, (_, lv) => {
+        const pct = (lv / (PX_LEVELS - 1)) * PX_MAX_PCT;
+        return lv === 0 ? "立即按买一/对手价成交" : `当前价上方约 ${pct.toFixed(1)}% 挂限价`;
+      }),
+    };
+  });
+  return questions;
+}
 
-  /**
-   * apiKey / dataDir 可注入，为了能在测试里验证"没 key 降级"与"正常出单"两条路径，
-   * 而不用去改进程环境变量（config 在首次 import 时就固定了）。
-   */
+export const PX_LEVELS = 7;
+export const PX_MAX_PCT = 3;
+export const pxOffsetPctOf = (score: number): number =>
+  (Math.min(Math.max(score, 0), PX_LEVELS - 1) / (PX_LEVELS - 1)) * PX_MAX_PCT;
+
+function holdDecision(t0: number, trace: DecisionTrace, inputTokens = 0): Decision {
+  return {
+    action: "hold",
+    probabilities: { buy: 0, sell: 0, hold: 1 },
+    probabilitySemantics: trace.source === "jev" ? "model-prompt" : undefined,
+    picks: [],
+    latencyMs: performance.now() - t0,
+    late: false,
+    inputTokens,
+    modelFailed: trace.status === "not-configured" || trace.status === "failed" || trace.status === "invalid-response",
+    trace,
+  };
+}
+
+export class JevModel implements Model {
+  readonly name = config.jevModelId;
+
   constructor(
     private ask: JevAsk = defaultAsk,
     private opts: { apiKey?: string | null; dataDir?: string; budgetCny?: number } = {},
@@ -134,83 +175,135 @@ export class JevModel implements Model {
 
   async decide(s: SignalState): Promise<Decision> {
     const t0 = performance.now();
-    const list = eligible(s, this.budgetCny);
-    const dir = this.opts.dataDir ?? config.dataDir;
+    const isSell = s.decisionMode === "sell";
+    const list = isSell ? [] : eligible(s, this.budgetCny);
+    const positions = isSell ? (s.positions ?? []) : [];
 
-    if (!s.allowed.buy || !s.gate.allowed || s.openSlots <= 0 || list.length === 0) {
-      // 闸门关着或没额度：这是规则层的结论，不需要花一次模型调用
-      return this.fallback.decide(s);
+    if (isSell && (!s.allowed.sell || positions.length === 0)) {
+      return holdDecision(t0, { source: "hard-rule", model: this.name, call: "none", status: "skipped-hard-rule", reason: "无可卖 T+1 持仓" });
     }
-
+    if (!isSell && (!s.allowed.buy || !s.gate.allowed || s.openSlots <= 0 || list.length === 0)) {
+      return holdDecision(t0, { source: "hard-rule", model: this.name, call: "none", status: "skipped-hard-rule", reason: "硬闸门关闭或没有可执行候选" });
+    }
     if (!this.apiKey) {
-      console.warn("[jev] 未配置 TYPESAFE_AI_API_KEY，降级为 FactorModel");
-      const d = await this.fallback.decide(s);
-      return { ...d, modelFailed: true, latencyMs: performance.now() - t0 };
+      const trace: DecisionTrace = { source: "jev", model: this.name, call: "none", status: "not-configured", reason: "TYPESAFE_AI_API_KEY 未配置" };
+      console.error("[jev] 未配置 TYPESAFE_AI_API_KEY，本轮 fail-closed HOLD，不降级 FactorModel");
+      return holdDecision(t0, trace);
     }
 
     const costBps = roundTrip(this.budgetCny).bps;
-    const state = buildState(s, list, costBps);
-    const questions = buildQuestions(s, list, costBps);
-    // 缓存键带上模型 id：换 JEV_MODEL_ID 后不能串用另一个模型的答案
-    const cacheKey = join(
-      dir,
-      "llm",
-      `jev-${s.date}-${Bun.hash(JSON.stringify({ model: config.jevModelId, state, questions })).toString(36)}.json`,
-    );
-
+    const state = buildState(s, list, costBps, positions);
+    const questions = isSell ? buildSellQuestions(s, positions) : buildQuestions(s, list, costBps);
+    const requestHash = Bun.hash(JSON.stringify({ model: config.jevModelId, state, questions })).toString(36);
+    const root = this.opts.dataDir ?? config.dataDir;
+    const cacheKey = join(root, "llm", `jev-${s.date}-${s.decisionMode ?? "buy"}-${requestHash}.json`);
     let reply: JevReply | null = null;
+    let call: DecisionTrace["call"] = "remote";
     try {
       const cached = await Bun.file(cacheKey).json().catch(() => null);
-      if (cached?.answers) reply = cached as JevReply;
-      else {
+      if (cached?.answers && typeof cached.answers === "object") {
+        reply = cached as JevReply;
+        call = "cache";
+      } else {
         reply = await this.ask({ state, questions, timeoutMs: config.jevTimeoutMs });
-        await mkdir(join(dir, "llm"), { recursive: true });
-        await Bun.write(cacheKey, JSON.stringify({ date: s.date, answers: reply.answers, inputTokens: reply.inputTokens }));
+        await mkdir(join(root, "llm"), { recursive: true });
+        await Bun.write(cacheKey, JSON.stringify({ date: s.date, mode: s.decisionMode ?? "buy", answers: reply.answers, inputTokens: reply.inputTokens }));
       }
     } catch (e) {
-      console.error(`[jev] 调用失败，降级为 FactorModel: ${(e as Error).message}`);
-      const d = await this.fallback.decide(s);
-      return { ...d, modelFailed: true, latencyMs: performance.now() - t0 };
+      const trace: DecisionTrace = {
+        source: "jev",
+        model: this.name,
+        call: "remote",
+        status: "failed",
+        requestKey: requestHash,
+        reason: (e as Error).message.slice(0, 160),
+      };
+      console.error(`[jev] 调用失败，本轮 fail-closed HOLD，不降级 FactorModel: ${trace.reason}`);
+      return holdDecision(t0, trace);
     }
 
     const probs = new Map<string, number>();
-    list.forEach((c, i) => {
-      const a = reply!.answers[`q${i}`];
-      const p = typeof a?.probability === "number" ? a.probability : Number.NaN;
-      if (Number.isFinite(p)) probs.set(c.features.code, Math.max(0, Math.min(1, p)));
-    });
+    if (isSell) {
+      positions.forEach((p, i) => {
+        const a = reply!.answers[`q${i}`];
+        const probability = typeof a?.probability === "number" ? a.probability : Number.NaN;
+        if (Number.isFinite(probability)) probs.set(p.code, Math.max(0, Math.min(1, probability)));
+      });
+    } else {
+      list.forEach((c, i) => {
+        const a = reply!.answers[`q${i}`];
+        const probability = typeof a?.probability === "number" ? a.probability : Number.NaN;
+        if (Number.isFinite(probability)) probs.set(c.features.code, Math.max(0, Math.min(1, probability)));
+      });
+    }
 
+    const trace: DecisionTrace = {
+      source: "jev",
+      model: this.name,
+      call,
+      status: probs.size ? "ok" : "invalid-response",
+      requestKey: requestHash,
+      answerCount: probs.size,
+      inputTokens: reply?.inputTokens ?? 0,
+      reason: call === "cache" ? "使用此前成功的 Jev 回复缓存" : "本轮已完成远端 Jev 调用",
+    };
     if (!probs.size) {
-      console.error("[jev] 返回里没有任何可用概率，降级为 FactorModel");
-      const d = await this.fallback.decide(s);
-      return { ...d, modelFailed: true, latencyMs: performance.now() - t0 };
+      console.error("[jev] 返回没有可用概率，本轮 fail-closed HOLD，不降级 FactorModel");
+      return holdDecision(t0, trace, reply?.inputTokens ?? 0);
+    }
+
+    if (isSell) {
+      const ranked = positions
+        .filter((p) => (probs.get(p.code) ?? 0) >= config.jevMinProb)
+        .sort((a, b) => (probs.get(b.code) ?? 0) - (probs.get(a.code) ?? 0) || a.code.localeCompare(b.code));
+      const picks: Pick[] = ranked.map((p) => {
+        const i = positions.findIndex((x) => x.code === p.code);
+        const a = reply!.answers[`q${i}px`];
+        return {
+          code: p.code,
+          name: p.name,
+          probability: probs.get(p.code) ?? 0,
+          score: 0,
+          priceOffsetPct: typeof a?.score === "number" ? pxOffsetPctOf(a.score) : 0,
+          reasons: [`Jev 卖出判定 ${(100 * (probs.get(p.code) ?? 0)).toFixed(0)}%`],
+        };
+      });
+      const best = Math.max(...probs.values());
+      return {
+        action: picks.length ? "sell" : "hold",
+        probabilities: { buy: 0, sell: picks.length ? best : 0, hold: picks.length ? 1 - best : 1 },
+        probabilitySemantics: "model-prompt",
+        picks,
+        latencyMs: performance.now() - t0,
+        late: false,
+        inputTokens: reply!.inputTokens,
+        modelFailed: false,
+        trace,
+      };
     }
 
     const picks: Pick[] = list
       .filter((c) => (probs.get(c.features.code) ?? 0) >= config.jevMinProb)
-      .sort((a, b) => (probs.get(b.features.code) ?? 0) - (probs.get(a.features.code) ?? 0))
+      .sort((a, b) => (probs.get(b.features.code) ?? 0) - (probs.get(a.features.code) ?? 0) || a.features.code.localeCompare(b.features.code))
       .slice(0, Math.min(s.openSlots, config.k))
       .map((c) => ({
         code: c.features.code,
         name: c.features.name,
         probability: probs.get(c.features.code) ?? 0,
         score: c.score,
-        reasons: [...c.reasons, `Jev 判定 ${(100 * (probs.get(c.features.code) ?? 0)).toFixed(0)}%`],
+        reasons: [...c.reasons, `Jev 买入判定 ${(100 * (probs.get(c.features.code) ?? 0)).toFixed(0)}%`],
       }));
-
     const best = Math.max(...probs.values());
-    const probabilities = { buy: picks.length ? best : 0, sell: 0, hold: picks.length ? 1 - best : 1 };
-
     return {
       action: picks.length ? "buy" : "hold",
-      probabilities,
-      // 这是远端模型对"扣成本后为正"这个可判定陈述给出的概率，本项目无法验证它的校准质量
+      probabilities: { buy: picks.length ? best : 0, sell: 0, hold: picks.length ? 1 - best : 1 },
       probabilitySemantics: "model-prompt",
       picks,
       latencyMs: performance.now() - t0,
       late: false,
-      inputTokens: reply.inputTokens,
+      inputTokens: reply!.inputTokens,
       modelFailed: false,
+      trace,
     };
   }
 }

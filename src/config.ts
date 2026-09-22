@@ -66,8 +66,7 @@ export const config = {
   sellRepriceRounds: num("SELL_REPRICE_ROUNDS", 2),
   /** 开盘稳定期（分钟）：开盘后这段时间只观察不出新买入建议（退出管理照常），让开盘脉冲先走出来 */
   openDelayMin: num("OPEN_DELAY_MIN", 15),
-  /** Jev 卖出辅助（实验）：每日对可卖仓位问一次"立即离场 vs 按规则持有"的概率，
-   *  ≥ JEV_MIN_PROB 时生成提前离场建议单。硬规则（止损/期限）不受影响。 */
+  /** 兼容旧 .env；Jev 全程模式的卖出判断已统一走 JevModel，不再读取此开关。 */
   sellAssist: bool("SELL_ASSIST", true),
   /** 次日无条件清仓 */
   forceExitMin: hhmm(env("FORCE_EXIT_AT", "10:00")!, 600),

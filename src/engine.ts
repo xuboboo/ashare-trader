@@ -3,8 +3,8 @@
  *
  * 节奏是 A 股能落地的三个触发点（不做盘中高频）：
  *   09:05 盘前扫描（LLM 情绪闸门 + 事件 veto）
- *   09:30-10:00 持仓退出（高开减半 / 止损 / 到点无条件清仓）
- *   14:40-14:57 尾盘选股（因子打分 + 大盘闸门 -> 建议单）
+ *   09:30-14:57 Jev 全程买卖判断（止损/T+1 是系统硬边界）
+ *   因子只做硬筛选输入，不再作为 Jev 失败时的决策替代
  * 其余时段只做行情心跳、影子撮合与净值标记。
  */
 import { config } from "./config";
@@ -17,7 +17,6 @@ import { defaultFactorParams, featuresFromSnapshot, gateLabel, ma5CloseBefore, m
 import { FactorModel, type Decision, type DailyBias, type Model, type SignalState, LlmAdvisory } from "./model";
 import { JevModel } from "./jev";
 import { LocalModel } from "./local";
-import { SellAdvisor, type SellAdvice, type SellAssistInput } from "./sell-assist";
 import { availableCash, cancelStaleSells, makeBuyOrder, makeExitOrder, restingKey, restingKeys, settlePending, type Clock, type SuggestedOrder } from "./orders";
 import { fetchIndexDaily, fetchIndex, fetchTickTrades, fetchZtPool, fetchSnapshots, quoteAgeSec, type DailyBar, type Snapshot, type TickTrade } from "./quotes";
 import { riskBrake, type RiskBrake } from "./risk";
@@ -59,6 +58,8 @@ export interface TickEvent {
   quotes: { ok: number; fails: number; stale: boolean; eodOnly: boolean; quoteDay: string; ageSec: number };
   scan: { scored: number; rejected: number; top: { code: string; name: string; score: number; gainPct: number; volumeRatio: number; priceVsVwapBps: number; reasons: string[] }[] };
   decision: Decision | null;
+  /** 同一轮可能同时有 Jev 买入/卖出判断；decision 保持最后一条供旧面板兼容。 */
+  decisions?: { buy?: Decision; sell?: Decision };
   /** 组合级风控闸（日亏损/回撤），只在调用过 decide 的轮次有值 */
   risk: RiskBrake | null;
   orders: SuggestedOrder[];
@@ -109,11 +110,8 @@ export class Engine {
   private lastBuyMs = 0;
   /** 上一轮的可买候选代码集（事件触发的比较基准） */
   private lastEligibleKey = "";
-  /** Jev 卖出辅助：上次评估的交易日（每日一次） */
-  private sellAssistDate = "";
-  private sellAdvisor = new SellAdvisor();
-  /** Jev 10:00 延长评估：上次评估的交易日 */
-  private extEvalDate = "";
+  /** Jev 卖出决策节奏；买卖都必须留下真实调用 trace。 */
+  private lastSellMs = 0;
   /** 上一次 eodOnly 恢复探测时刻 */
   private lastEodProbeMs = 0;
   /** 个股 ATR₁₄（STOP_MODE=atr 用），init 与每日日切时各加载一次 */
@@ -412,6 +410,7 @@ export class Engine {
     const newOrders: SuggestedOrder[] = [];
     const cancelledOrders: SuggestedOrder[] = [];
     let decision: Decision | null = null;
+    let sellDecision: Decision | null = null;
 
     if (force || trading) {
       if ((trading || force) && clock.minutes >= config.session.premarketMin && this.biasDate !== clock.date) {
@@ -426,123 +425,42 @@ export class Engine {
           cancelledOrders.push(...stale.cancelled);
           await this.persistPending();
         }
-        // ---- Jev 10:00 延长评估：让 Jev 逐仓判断延长还是离场 ----
-        if (clock.minutes >= config.forceExitMin && config.typesafeApiKey && this.extEvalDate !== clock.date) {
-          this.extEvalDate = clock.date;
-          const remaining = [...this.book.positions.values()].filter((p) => {
-            if (p.sellable <= 0) return false;
-            const sn = this.snapshots.get(p.code);
-            return sn && sn.price > 0;
-          });
-          if (remaining.length) {
-            const inputs: SellAssistInput[] = remaining.map((p) => {
-              const sn = this.snapshots.get(p.code)!;
-              return {
-                code: p.code,
-                name: p.name,
-                entry: p.avgPrice,
-                price: sn.price,
-                unrealizedPct: ((sn.price - p.avgPrice) / p.avgPrice) * 100,
-                stop: p.stopPrice,
-                heldDays: Math.max(1, Math.round((Date.parse(`${clock.date}T12:00:00Z`) - Date.parse(`${p.openDate}T12:00:00Z`)) / 86_400_000)),
-              };
-            });
-            const advices = await this.sellAdvisor.advise(inputs);
-            void this.persistSellAdvice(clock, advices, "extend-eval");
-            for (const a of advices) {
-              if (a.pExitBetter === null || !Number.isFinite(a.pExitBetter)) continue;
-              const pos = this.book.positions.get(a.code);
-              const sn = this.snapshots.get(a.code);
-              if (!pos || !sn) continue;
-              if (a.suggestExit) {
-                // 同标的已有在途卖单（含尚未撤净的死单）就不叠加：两张卖单同时成交会超卖
-                if ([...this.pending.values()].some((o) => o.side === "sell" && o.code === a.code)) continue;
-                // Jev 决定离场：生成退出单，限价用 Jev 的定价（未给出则按市价）
-                const hint = hintOf(a, sn);
-                const o = makeExitOrder(
-                  pos,
-                  sn,
-                  clock,
-                  `Jev 卖出决策（p=${(a.pExitBetter * 100).toFixed(0)}%）：确认弱势提前离场${hintLabel(hint, a, sn)}`,
-                  pos.sellable,
-                  0,
-                  hint,
-                );
-                if (o) {
-                  newOrders.push(o);
-                  this.pending.set(o.signalId, o);
-                }
-              } else {
-                // Jev 决定延长：放宽止损至成本 ×95%，新期限 14:50
-                pos.stopPrice = Math.max(pos.stopPrice, round2(pos.avgPrice * 0.95));
-                pos.extensionUntil = "14:50";
-              }
-            }
-          }
-        }
-
-        // ---- 硬规则退出阶梯（止损 / 高开减半 / 到点清仓 / VWAP）----
+        // ---- 硬安全边界：止损 / T+1 到点清仓。Jev 不得推迟这两类退出。----
         const exits = this.exitOrders(clock);
         newOrders.push(...exits);
         for (const o of exits) this.pending.set(o.signalId, o);
         if (exits.length) await this.persistPending();
 
-        // ---- Jev 全程卖出决策：每个决策轮（40s）对每个可卖仓位问
-        //      "立即离场 vs 按规则持有到明早10:00，哪个净收益更高"。
-        //      硬底线不变：止损触发和 10:00 期限由规则无条件执行，Jev 不可推迟。----
-        if (
-          config.sellAssist &&
-          config.typesafeApiKey
-        ) {
-          const sellableNow = [...this.book.positions.values()].filter((p) => {
-            if (p.sellable <= 0) return false;
-            const sn = this.snapshots.get(p.code);
-            return sn && sn.price > 0;
-          });
-          if (sellableNow.length) {
-            const inputs: SellAssistInput[] = sellableNow.map((p) => {
-              const sn = this.snapshots.get(p.code)!;
-              return {
-                code: p.code,
-                name: p.name,
-                entry: p.avgPrice,
-                price: sn.price,
-                unrealizedPct: ((sn.price - p.avgPrice) / p.avgPrice) * 100,
-                stop: p.stopPrice,
-                heldDays: Math.max(1, Math.round((Date.parse(`${clock.date}T12:00:00Z`) - Date.parse(`${p.openDate}T12:00:00Z`)) / 86_400_000)),
-              };
-            });
-            const advices = await this.sellAdvisor.advise(inputs);
-            void this.persistSellAdvice(clock, advices, "sell-assist");
-            // 去重：硬规则本轮的 + 历史轮次 pending 中的，都不重复出
-            const hasSellOrder = new Set(newOrders.filter((o) => o.side === "sell").map((o) => o.code));
-            for (const o of this.pending.values()) {
-              if (o.side === "sell") hasSellOrder.add(o.code);
-            }
-            for (const a of advices) {
-              if (!a.suggestExit || a.pExitBetter === null || !Number.isFinite(a.pExitBetter)) continue;
-              if (hasSellOrder.has(a.code)) continue; // 本轮硬规则已为该仓位生成卖出单，不重复
-              const pos = this.book.positions.get(a.code);
-              const sn = this.snapshots.get(a.code);
-              if (!pos || !sn) continue;
-              // 限价用 Jev 的定价：0% = 市价对手价离场，>0% = 挂高等更好的价；
-              // 挂高后若市价 2 轮未到限价下沿，死单改价机制会撤掉，下一决策轮 Jev 重新定价
-              const hint = hintOf(a, sn);
-              const o = makeExitOrder(
-                pos,
-                sn,
-                clock,
-                `Jev 卖出辅助（p=${(a.pExitBetter * 100).toFixed(0)}%）：确认弱势提前离场${hintLabel(hint, a, sn)}`,
-                pos.sellable,
-                0,
-                hint,
-              );
-              if (o) {
-                newOrders.push(o);
-                this.pending.set(o.signalId, o);
-              }
+        // ---- Jev 唯一卖出决策：每个决策周期评估全部可卖持仓。----
+        const sellNow = Date.now();
+        if (config.model === "jev" && sellNow - this.lastSellMs >= config.decideEveryMs) {
+          sellDecision = await this.decide(clock, scored, gate, "sell");
+          if (!decision) decision = sellDecision;
+          this.lastSellMs = sellNow;
+          const hasSellOrder = new Set(newOrders.filter((o) => o.side === "sell").map((o) => o.code));
+          for (const o of this.pending.values()) if (o.side === "sell") hasSellOrder.add(o.code);
+          for (const pick of sellDecision.picks) {
+            if (hasSellOrder.has(pick.code)) continue;
+            const pos = this.book.positions.get(pick.code);
+            const sn = this.snapshots.get(pick.code);
+            if (!pos || !sn || pos.sellable <= 0) continue;
+            const offset = pick.priceOffsetPct ?? 0;
+            const hint = offset > 0 ? round2(sn.price * (1 + offset / 100)) : null;
+            const o = makeExitOrder(
+              pos,
+              sn,
+              clock,
+              `Jev 全程卖出决策（p=${(pick.probability * 100).toFixed(0)}%）${hint ? `，Jev 价格意图 +${offset.toFixed(1)}%` : "，按对手价"}`,
+              pos.sellable,
+              0,
+              hint,
+            );
+            if (o) {
+              newOrders.push(o);
+              this.pending.set(o.signalId, o);
             }
           }
+          if (sellDecision.picks.length) await this.persistPending();
         }
       }
 
@@ -686,6 +604,7 @@ export class Engine {
       },
       scan: { scored: scored.length, rejected, top },
       decision,
+      decisions: decision || sellDecision ? { buy: decision ?? undefined, sell: sellDecision ?? undefined } : undefined,
       risk: this.lastRisk,
       // 事件带全量订单视图：新建的 + 本轮撤销的 + 当前全部在途。
       // 在途单每轮重发不是浪费 —— 重启后内存事件流清空，UI 靠它恢复真实挂单视图；
@@ -711,28 +630,44 @@ export class Engine {
     });
   }
 
-  private signalState(clock: EngineClock, scored: Scored[], gate: Gate, mode: "buy" | "manage", risk: RiskBrake): SignalState {
+  private signalState(clock: EngineClock, scored: Scored[], gate: Gate, mode: "buy" | "sell", risk: RiskBrake): SignalState {
     const held = [...this.book.positions.values()];
     const buysToday = this.book.openDateCount(clock.date);
     const openSlots = Math.max(0, config.maxDailyOpens - buysToday);
+    const positions = held.flatMap((p) => {
+      const sn = this.snapshots.get(p.code);
+      if (p.sellable <= 0 || !sn || !(sn.price > 0)) return [];
+      return [{
+        code: p.code,
+        name: p.name,
+        entry: p.avgPrice,
+        price: sn.price,
+        unrealizedPct: p.avgPrice > 0 ? ((sn.price - p.avgPrice) / p.avgPrice) * 100 : 0,
+        stop: p.stopPrice,
+        heldDays: Math.max(1, Math.round((Date.parse(`${clock.date}T12:00:00Z`) - Date.parse(`${p.openDate}T12:00:00Z`)) / 86_400_000)),
+        sellable: p.sellable,
+      }];
+    });
     return {
       date: clock.date,
       time: clock.time,
-      horizon: mode === "buy" ? "尾盘买入、次日 10:00 前清仓" : "持仓退出",
+      horizon: mode === "buy" ? "Jev 买入判断；次日 10:00 前清仓" : "Jev 全程卖出判断；止损/期限为硬边界",
       gate,
       index: this.lastIndex,
       candidates: scored,
       heldCodes: held.map((p) => p.code),
       allowed: {
         buy: mode === "buy" && gate.allowed && (this.bias?.allowOpen ?? true) && openSlots > 0 && !risk.buyBlocked,
-        sell: held.some((p) => p.sellable > 0),
+        sell: positions.length > 0,
       },
       vetoes: this.bias?.vetoes ?? {},
       openSlots: Math.min(openSlots, config.k - held.length),
+      decisionMode: mode,
+      positions,
     };
   }
 
-  private async decide(clock: EngineClock, scored: Scored[], gate: Gate, mode: "buy" | "manage"): Promise<Decision> {
+  private async decide(clock: EngineClock, scored: Scored[], gate: Gate, mode: "buy" | "sell"): Promise<Decision> {
     // 组合级风控闸：只封新开仓，不封退出（止损/清仓在亏损状态也必须走得掉）
     this.lastRisk = this.riskNow();
     const st = this.signalState(clock, scored, gate, mode, this.lastRisk);
@@ -751,11 +686,11 @@ export class Engine {
     if (config.model !== "jev" && config.typesafeApiKey) models.push(new JevModel());
     if (!models.length) return;
     const st = this.signalState(clock, scored, gate, "buy", this.riskNow());
-    const shadow: { model: string; action: string; modelFailed?: boolean; picks: { code: string; probability: number }[] }[] = [];
+    const shadow: { model: string; action: string; modelFailed?: boolean; trace?: Decision["trace"]; picks: { code: string; probability: number }[] }[] = [];
     for (const m of models) {
       try {
         const d = await m.decide(st);
-        shadow.push({ model: m.name, action: d.action, modelFailed: d.modelFailed, picks: d.picks.map((p) => ({ code: p.code, probability: p.probability })) });
+        shadow.push({ model: m.name, action: d.action, modelFailed: d.modelFailed, trace: d.trace, picks: d.picks.map((p) => ({ code: p.code, probability: p.probability })) });
       } catch {
         shadow.push({ model: m.name, action: "error", picks: [] });
       }
@@ -765,6 +700,7 @@ export class Engine {
       time: clock.time,
       active: config.model,
       action: active.action,
+      activeTrace: active.trace,
       picks: active.picks.map((p) => ({ code: p.code, probability: p.probability })),
       shadow,
     };
@@ -773,43 +709,6 @@ export class Engine {
     const file = join(dir, `${clock.date}.jsonl`);
     const prev = (await Bun.file(file).exists()) ? await Bun.file(file).text() : "";
     await writeFileAtomic(file, prev + JSON.stringify(row) + "\n");
-  }
-
-  /**
-   * Jev 卖出评估落盘：概率、定价意图、当时市价与折算限价逐次追加到
-   * data/shadow/<日期>-sell-assist.jsonl —— 没有这份记录，"Jev 定的卖价好不好"
-   * 两周后无法用真实结果回答。失败静默：落盘不影响主链路。
-   */
-  private async persistSellAdvice(clock: EngineClock, advices: SellAdvice[], kind: "extend-eval" | "sell-assist"): Promise<void> {
-    if (!advices.length) return;
-    try {
-      const dir = join(config.dataDir, "shadow");
-      await mkdir(dir, { recursive: true });
-      const file = join(dir, `${clock.date}-sell-assist.jsonl`);
-      const rows = advices.map((a) => {
-        const sn = this.snapshots.get(a.code);
-        const price = sn?.price ?? 0;
-        const hint =
-          a.priceOffsetPct != null && Number.isFinite(a.priceOffsetPct) && price > 0
-            ? round2(price * (1 + Math.max(0, a.priceOffsetPct) / 100))
-            : null;
-        return {
-          ts: Date.now(),
-          time: clock.time,
-          kind,
-          code: a.code,
-          p: a.pExitBetter,
-          suggestExit: a.suggestExit,
-          priceOffsetPct: a.priceOffsetPct ?? null,
-          price,
-          hint,
-        };
-      });
-      const prev = (await Bun.file(file).exists()) ? await Bun.file(file).text() : "";
-      await writeFileAtomic(file, prev + rows.map((r) => JSON.stringify(r)).join("\n") + "\n");
-    } catch {
-      /* 落盘失败不影响主流程 */
-    }
   }
 
   /**
@@ -847,16 +746,13 @@ export class Engine {
         return true;
       };
 
-      // ---- 1) 开盘浮盈止盈：当日只评估一次，以今日开盘价对成本计（GPT 复核采纳：
-      //         旧实现用 3 秒价变动当"高开"，实为永远打不中的死代码）----
-      if (!p.openingTpDone && sn.open > 0 && p.avgPrice > 0) {
-        p.openingTpDone = true; // 无论是否触发，当日只评估这一次
+      // Jev 模式下，高开减半是可裁量决策，交给 Jev；非 Jev 模式保留旧规则。
+      if (config.model !== "jev" && !p.openingTpDone && sn.open > 0 && p.avgPrice > 0) {
+        p.openingTpDone = true;
         const openPnlPct = ((sn.open - p.avgPrice) / p.avgPrice) * 100;
         if (openPnlPct >= config.gapTrimPct) {
           const half = lotAwareHalfQty(p.sellable);
-          // 本轮只动作一张单；剩仓交给下一轮的止损/到点/弱势规则（人也就是这么做的）
           if (half >= 100 && emit(`开盘浮盈 ${openPnlPct.toFixed(2)}% ≥ ${config.gapTrimPct}%，先卖一半`, half)) continue;
-          // half < 100：整手约束下无法分批，维持全仓交由止损/期限规则处理
         }
       }
 
@@ -870,8 +766,8 @@ export class Engine {
         continue;
       }
 
-      // ---- 4) 分时均线弱势：连续确认轮数防 3 秒噪声 ----
-      if (clock.minutes >= config.session.morningStart + 15 && sn.vwap > 0) {
+      // Jev 模式下，VWAP 弱势也进入 Jev 的全程判断；止损和期限仍是硬边界。
+      if (config.model !== "jev" && clock.minutes >= config.session.morningStart + 15 && sn.vwap > 0) {
         if (sn.price < sn.vwap) p.vwapBelowRounds = (p.vwapBelowRounds ?? 0) + 1;
         else p.vwapBelowRounds = 0;
         if ((p.vwapBelowRounds ?? 0) >= config.vwapConfirmRounds) emit("跌破分时均线，弱势离场", p.sellable);
@@ -1196,16 +1092,6 @@ export class Engine {
     return `${Math.round(ms)}ms`;
   }
 }
-
-/** Jev 定价（限价相对现价的加价 %）→ 卖出限价 hint（元）。负值/缺失按市价处理（返回 null）。 */
-const hintOf = (a: SellAdvice, sn: { price: number }): number | null => {
-  if (a.priceOffsetPct == null || !Number.isFinite(a.priceOffsetPct) || !(sn.price > 0)) return null;
-  return round2(sn.price * (1 + Math.max(0, a.priceOffsetPct) / 100));
-};
-
-/** 依据行里说清楚这张卖出单的价是谁定的：Jev 挂高多少，还是市价离场。 */
-const hintLabel = (hint: number | null, a: SellAdvice, sn: { price: number }): string =>
-  hint != null && hint > sn.price ? `，限价 ${hint.toFixed(2)}（Jev 定价 +${(a.priceOffsetPct ?? 0).toFixed(1)}%）` : "，市价离场";
 
 function triggerOf(phase: Phase, minutes: number): string {
   if (phase === "pre-open") return minutes >= config.session.premarketMin ? "盘前预选" : "盘前等待";
