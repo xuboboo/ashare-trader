@@ -617,9 +617,13 @@ export class Engine {
     }
 
     // ---- 影子撮合 + 净值 ----
+    // 撮合只在连续竞价时段进行：集合竞价（09:15-09:25 申报、14:57-15:00 收盘竞价）不连续
+    // 撮合，真实市场里委托在那儿排队等一次性竞价，对着 L1 盘口逐轮成交是假的。
+    // 当日单到期作废不受此限（dayOver 在 settlePending 里先于 usable 判断）。
+    const matching = usable && liveQuotes(phase);
     // 分笔成交（排队证据）：只拉挂着在途单的代码，每轮几个请求；拉不到的代码退回快照口径
     const tapes = new Map<string, TickTrade[]>();
-    if (usable && config.paper) {
+    if (matching && config.paper) {
       for (const code of new Set([...this.pending.values()].filter((o) => o.status === "pending").map((o) => o.code))) {
         try {
           tapes.set(code, await fetchTickTrades(code));
@@ -632,7 +636,7 @@ export class Engine {
     const { fills, changed } = settlePending(this.pending, {
       snapshots: this.snapshots,
       clock,
-      usable,
+      usable: matching,
       paper: config.paper,
       roundStartMs,
       dayOver: phase === "after-hours" || phase === "closed",
