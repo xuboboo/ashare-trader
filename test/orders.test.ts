@@ -18,7 +18,7 @@ describe("建议单", () => {
     expect(o.limitHigh).toBeLessThanOrEqual(o.priceRef + 0.02);
     expect(o.limitLow).toBeGreaterThan(0);
     expect(o.stopPrice).toBe(10.19); // 10.5 * 0.97
-    expect(o.mustExitAt).toBe("次日 10:00");
+    expect(o.mustExitAt).toBeNull();
     expect(o.costBps).toBeGreaterThan(10);
     expect(o.status).toBe("pending");
     expect(o.reason).toContain("涨幅");

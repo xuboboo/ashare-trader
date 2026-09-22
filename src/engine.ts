@@ -425,7 +425,7 @@ export class Engine {
           cancelledOrders.push(...stale.cancelled);
           await this.persistPending();
         }
-        // ---- 硬安全边界：止损 / T+1 到点清仓。Jev 不得推迟这两类退出。----
+        // ---- 硬安全边界：止损与 T+1。Jev 自主决定其余卖出。----
         const exits = this.exitOrders(clock);
         newOrders.push(...exits);
         for (const o of exits) this.pending.set(o.signalId, o);
@@ -651,7 +651,7 @@ export class Engine {
     return {
       date: clock.date,
       time: clock.time,
-      horizon: mode === "buy" ? "Jev 买入判断；次日 10:00 前清仓" : "Jev 全程卖出判断；止损/期限为硬边界",
+      horizon: mode === "buy" ? "Jev 买入判断；退出时点由 Jev 自主决定" : "Jev 全程卖出判断；T+1/止损为硬边界",
       gate,
       index: this.lastIndex,
       candidates: scored,
@@ -713,10 +713,10 @@ export class Engine {
 
   /**
    * 持仓退出阶梯（每轮评估，规则间互斥触发、谁先命中执行谁）：
-   *   1. 开盘浮盈 ≥ GAP_TRIM_PCT（相对买入成本，只评估一次，卖整手约束下的一半）
-   *   2. 到点 FORCE_EXIT_AT 无条件清仓（策略期限，非交易所规定）
-   *   3. 跌破止损价全走
-   *   4. 跌破分时均线连续 VWAP_CONFIRM_ROUNDS 轮 → 弱势离场
+   *   1. Jev 模式由 Jev 自主判断高开减仓与 VWAP 弱势离场
+   *   2. 非 Jev 兼容模式保留高开减仓与 VWAP 弱势离场
+   *   3. 跌破止损价全走（唯一生产级价格保护）
+   *   不再设置固定时间清仓；Jev 可以自主决定持仓时长。
    * 触发价只是"发单信号"，不是保证成交价 —— 成交以 PAPER 撮合的对手价为准。
    */
   private exitOrders(clock: EngineClock): SuggestedOrder[] {
@@ -727,7 +727,7 @@ export class Engine {
       const sn = this.snapshots.get(p.code);
       if (!sn) continue;
       // 同一标的已有一张在途卖单：等它成交或作废，绝不叠加。
-      // 否则“开盘减半”与“到点清仓/止损”两张单会同时挂着，然后双双成交，卖出量超过持仓量。
+      // 否则“开盘减半”与“止损”两张单会同时挂着，然后双双成交，卖出量超过持仓量。
       if (resting.has(restingKey({ code: p.code, side: "sell" }))) continue;
 
       // 决定要走了就先掉同一标的的在途买单：一卖一买同时挂着手是矛盾指令
@@ -756,17 +756,13 @@ export class Engine {
         }
       }
 
-      // ---- 2) 硬期限 / 3) 止损 ----
-      if (clock.minutes >= config.forceExitMin) {
-        emit(`到点 ${hhmmOf(config.forceExitMin)} 无条件清仓（策略期限）`, p.sellable);
-        continue;
-      }
+      // ---- 唯一硬性价格保护：止损。固定时间清仓已移除，持仓期限由 Jev 决定。----
       if (sn.price <= p.stopPrice) {
         emit(`跌破止损 ${p.stopPrice}`, p.sellable);
         continue;
       }
 
-      // Jev 模式下，VWAP 弱势也进入 Jev 的全程判断；止损和期限仍是硬边界。
+      // Jev 模式下，VWAP 弱势也进入 Jev 的全程判断；止损仍是硬边界。
       if (config.model !== "jev" && clock.minutes >= config.session.morningStart + 15 && sn.vwap > 0) {
         if (sn.price < sn.vwap) p.vwapBelowRounds = (p.vwapBelowRounds ?? 0) + 1;
         else p.vwapBelowRounds = 0;
@@ -1049,12 +1045,11 @@ export class Engine {
       eodOnly: this.eodOnly,
       startedAt: this.startedAtMs,
       port: config.port,
-      // 决策口径（面板"常设命令"卡用）：节奏、单笔预算、本金、采纳阈值、清仓时点
+      // 决策口径（面板"常设命令"卡用）：节奏、单笔预算、本金与采纳阈值
       decideEveryMs: config.decideEveryMs,
       bankrollCny: config.bankrollCny,
       sizeCny: config.sizeCny,
       minProb: config.jevMinProb,
-      forceExitAt: hhmmOf(config.forceExitMin),
       stopLabel:
         config.stopMode === "atr"
           ? `次日止损触发线 −ATR×${config.atrK}（封底 −10%）`

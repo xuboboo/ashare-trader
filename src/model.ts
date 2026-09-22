@@ -44,7 +44,7 @@ export interface Pick {
 export interface SignalState {
   date: string;
   time: string;
-  /** 决策口径说明，例如"尾盘买入、次日 10:00 前清仓" */
+  /** 决策口径说明，例如"Jev 买入判断；退出时点由 Jev 自主决定" */
   horizon: string;
   gate: Gate;
   /** 大盘上下文（给模型的 state 与闸门判断用同一份数据） */

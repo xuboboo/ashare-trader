@@ -62,15 +62,12 @@ export const config = {
   /** 分时均线弱势确认轮数：连续跌破 VWAP 这么多轮才离场，防 3 秒 L1 噪声；1 = 一次跌破即走 */
   vwapConfirmRounds: num("VWAP_CONFIRM_ROUNDS", 2),
   /** 卖单死单改价：市价连续跌穿在途卖单限价下沿这么多轮就撤单（真人会撤单重挂，
-   *  死单不清会占住唯一的卖坑，把止损/到点清仓全部挡在门外）。0 = 关闭（不推荐）。 */
+   *  死单不清会占住唯一的卖坑，把止损/Jev 卖出全部挡在门外）。0 = 关闭（不推荐）。 */
   sellRepriceRounds: num("SELL_REPRICE_ROUNDS", 2),
   /** 开盘稳定期（分钟）：开盘后这段时间只观察不出新买入建议（退出管理照常），让开盘脉冲先走出来 */
   openDelayMin: num("OPEN_DELAY_MIN", 15),
   /** 兼容旧 .env；Jev 全程模式的卖出判断已统一走 JevModel，不再读取此开关。 */
   sellAssist: bool("SELL_ASSIST", true),
-  /** 次日无条件清仓 */
-  forceExitMin: hhmm(env("FORCE_EXIT_AT", "10:00")!, 600),
-
   /** 成本：全部双边/单边含义见 costs.ts，注释里的费率是 2026 年 A 股普通股默认档 */
   commissionRate: num("COMMISSION_RATE", 0.00025),
   commissionMin: num("COMMISSION_MIN", 5),

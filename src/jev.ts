@@ -15,7 +15,6 @@ import { config } from "./config";
 import { roundTrip } from "./costs";
 import type { Scored } from "./factors";
 import type { Decision, DecisionTrace, HeldPositionInput, Model, Pick, SignalState } from "./model";
-import { hhmmOf } from "./session";
 import { cannotAffordLot } from "./symbols";
 
 export interface JevAnswer {
@@ -73,7 +72,7 @@ export function buildState(
     date: s.date,
     decideAt: s.time,
     decisionMode: s.decisionMode ?? "buy",
-    holdPeriod: "隔夜，次日 10:00 前必须清仓（T+1）",
+    holdPeriod: "持仓期由 Jev 自主判断；T+1、止损与交易规则是硬约束",
     roundTripCostBps: costBps,
     index: s.index,
     gate: s.gate,
@@ -95,14 +94,14 @@ export function buildState(
 }
 
 export function buildQuestions(s: SignalState, list: Scored[], costBps: number): Record<string, unknown> {
-  const exitAt = hhmmOf(config.forceExitMin);
   const questions: Record<string, unknown> = {};
   list.forEach((c, i) => {
     questions[`q${i}`] = {
       type: "boolean",
       instructions:
         `在 ${s.date} ${s.time} 以对手价买入 ${c.features.name}(${c.features.code})，` +
-        `并按固定规则于次日 ${exitAt} 前退出（高开超 ${config.gapTrimPct}% 先减半、跌破止损即走、到点无条件清仓），` +
+        `在不违反 T+1、止损、涨跌停与交易时段等系统硬约束的前提下，` +
+        `由 Jev 自主判断退出时点与方式，` +
         `在扣除约 ${costBps.toFixed(1)}bp 的往返成本后，这笔交易的收益为正。` +
         `请独立判断该陈述，不要把候选的预筛分数当作概率。`,
     };
@@ -111,7 +110,6 @@ export function buildQuestions(s: SignalState, list: Scored[], costBps: number):
 }
 
 export function buildSellQuestions(s: SignalState, positions: HeldPositionInput[]): Record<string, unknown> {
-  const exitAt = hhmmOf(config.forceExitMin);
   const questions: Record<string, unknown> = {};
   positions.forEach((p, i) => {
     questions[`q${i}`] = {
@@ -119,8 +117,8 @@ export function buildSellQuestions(s: SignalState, positions: HeldPositionInput[
       instructions:
         `持仓 ${p.name}(${p.code})：成本 ${p.entry.toFixed(2)} 元，当前可成交价约 ${p.price.toFixed(2)} 元，` +
         `浮动盈亏 ${p.unrealizedPct.toFixed(2)}%，已持有 ${p.heldDays} 个交易日，止损线 ${p.stop.toFixed(2)} 元。` +
-        `在不违反止损、T+1 与最迟 ${exitAt} 强制清仓规则的前提下，` +
-        `现在按盘口卖出并持有现金，相比继续持有到规则退出，净收益更高的概率是多少？` +
+        `在不违反止损、T+1、涨跌停与交易时段等系统硬约束的前提下，` +
+        `现在按盘口卖出并持有现金，相比继续持有并由 Jev 自主决定退出时点，净收益更高的概率是多少？` +
         `请独立判断，不要把系统硬规则当成可取消的建议。`,
     };
     questions[`q${i}px`] = {

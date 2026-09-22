@@ -29,7 +29,7 @@ ashare-trader · model=factor · LLM=off · PAPER（影子成交，不下真实�
 | 时刻 | 看哪里 | 动作 |
 | --- | --- | --- |
 | 09:05 | 「模型决策」面板的常设命令与闸门徽章 | 显示"关"→ 今天什么都不做，横幅会写原因 |
-| 09:30-10:00 | 「建议单」里的卖出单 | 按卡片提示执行（止损 / 高开减半 / 到点清仓） |
+| 09:30-14:57 | 「模型决策」与「建议单」里的卖出单 | Jev 自主判断卖出；止损、T+1、涨跌停仍由系统硬规则约束 |
 | 09:30-14:57 | 「模型决策」大字结论 + 「建议单」里的买入单 | 每 `DECIDE_EVERY_MS`（默认 30s）一轮新决策；出单后点"复制下单指令" → 券商 App 照抄 → 回填 |
 | 收盘后 | 「心跳流」+ 持仓表 | 核对今天的成交是否都已回填，看含成本盈亏 |
 
@@ -41,7 +41,7 @@ ashare-trader · model=factor · LLM=off · PAPER（影子成交，不下真实�
 ```powershell
 # 1) 命令行（服务在跑就走 HTTP、账本与仪表盘同步；没在跑就直接写本地账本）
 bun run scripts/fill.ts 002156 buy 800 "@61.40"
-bun run scripts/fill.ts 002156 sell 800 "@62.10" --signal=S20260920-0001 --note="次日10点清仓"
+bun run scripts/fill.ts 002156 sell 800 "@62.10" --signal=S20260920-0001 --note="Jev 卖出判断"
 ```
 
 ```powershell
@@ -140,7 +140,7 @@ bun run start
 | `STOP_MODE` | fixed | fixed = 固定百分比；atr = 买入价 − ATR_K×ATR₁₄（封底买入价×90%），ATR 缺失自动回退 fixed |
 | `ATR_K` / `ATR_N` | 2.5 / 14 | atr 模式的止损倍数与回看窗口；回测对比 `bun run scripts/atr-sweep.ts` |
 | `GAP_TRIM_PCT` | 3 | 次日高开超过该值先卖一半 |
-| `FORCE_EXIT_AT` | 10:00 | 次日无条件清仓时刻 |
+| `FORCE_EXIT_AT` | 已移除 | 生产 Jev 模式不设置固定清仓时刻，退出时点由 Jev 决定 |
 | `MAX_DAY_LOSS_PCT` | 3 | 当日亏损（相对日初权益）达到此值停止开仓，次日自动恢复；0 关闭 |
 | `MAX_DRAWDOWN_PCT` | 10 | 权益自峰值回撤达到此值停止开仓，创新高自动恢复；0 关闭 |
 | `COMMISSION_RATE` / `COMMISSION_MIN` | 0.00025 / 5 | 佣金，**按你券商真实档位改** |

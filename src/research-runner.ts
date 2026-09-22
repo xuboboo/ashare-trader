@@ -2,7 +2,8 @@
  * 严格研究 runner：只读 research/ 协议，不读取旧 data/daily，也不调用任何模型。
  *
  * 每个样本的时间顺序是：
- *   T 日 PIT 股票池 -> T 日 14:45 之前的 1m -> ask 入场 -> T+1 09:30~10:00 bid 出场。
+ *   旧固定持有期研究口径：T 日 PIT 股票池 -> T 日 14:45 之前的 1m -> ask 入场 -> T+1 09:30~10:00 bid 出场。
+ *   这不是当前生产 Jev 的退出规则；生产退出时点由 Jev 自主判断。
  * 训练、验证、测试只按 manifest 切分；跨边界的标签直接丢弃。
  */
 import { buyCosts, sellCosts } from "./costs";

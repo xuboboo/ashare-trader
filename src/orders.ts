@@ -26,7 +26,7 @@ export interface SuggestedOrder {
   limitLow: number;
   limitHigh: number;
   stopPrice: number | null;
-  /** 次日必须清仓的时间 */
+  /** 兼容旧接口；当前 Jev 模式不预设固定清仓时点。 */
   mustExitAt: string | null;
   amountCny: number;
   costCny: number;
@@ -109,7 +109,7 @@ export function makeBuyOrder(
     stopFixedAlt,
     stopFixed,
     stopAtr: stopAtr ?? undefined,
-    mustExitAt: "次日 " + hhmm(config.forceExitMin),
+    mustExitAt: null,
     amountCny,
     costCny,
     costBps: amountCny > 0 ? (costCny / amountCny) * 10_000 : 0,
@@ -123,10 +123,10 @@ export function makeBuyOrder(
   };
 }
 
-/** 卖出建议单（止损 / 次日清仓 / 高开减仓 / 模型提前离场）。qty 受 T+1 可卖数量限制。
+/** 卖出建议单（止损 / 高开减仓 / Jev 自主离场）。qty 受 T+1 可卖数量限制。
  *  priceHint = 模型（Jev）定的卖出限价：钳在 [现价, 涨停] 之间（模型要求挂高价等待，
  *  但不允许荒谬值，也不会低于市价 —— 那等于市价离场）；缺省用触发瞬间市价。
- *  硬规则卖出（止损/到点/弱势）不传 hint：它们是保护性离场，按市价走，不等价格。 */
+ *  硬规则卖出（止损/弱势）不传 hint：它们是保护性离场，按市价走，不等价格。 */
 export function makeExitOrder(
   pos: Position,
   snap: Snapshot,
@@ -199,7 +199,7 @@ export function availableCash(cash: number, pending: Map<string, SuggestedOrder>
  * 死单改价：市价连续跌穿在途卖单限价下沿 rounds 轮就撤掉这张单。
  *
  * 真人不会让一张永远成交不了的委托占着卖坑 —— 本系统同一标的同时只允许一张
- * 在途卖单（防重复卖出），死单不清，止损/到点清仓/Jev 卖出就全部被挡住，
+ * 在途卖单（防重复卖出），死单不清，止损/Jev 卖出就全部被挡住，
  * 持仓等于没有保护。撤掉之后退出阶梯同一轮就会按现价重新出单：继续阴跌就
  * 逐轮跟随下移，等价于触发止损后的市价卖出；价格回来则按新限价带正常挂。
  * 反方向（市价高于限价带）不用管：限价卖单会按带内对手价成交，真实市场同理。

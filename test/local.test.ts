@@ -14,7 +14,7 @@ const cand = (code: string, name: string, over = {}): Scored =>
 const state = (candidates: Scored[], over: Partial<SignalState> = {}): SignalState => ({
   date: "2026-09-21",
   time: "14:45",
-  horizon: "尾盘买入、次日 10:00 前清仓",
+  horizon: "尾盘买入；退出时点由 Jev 自主决定",
   gate: { allowed: true, reasons: ["ok"] },
   index: { price: 3900, pct: 0.5, amountYi: 9000, ma5: 3850 },
   candidates,

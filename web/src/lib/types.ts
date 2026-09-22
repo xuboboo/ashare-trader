@@ -195,7 +195,6 @@ export interface Meta {
   bankrollCny?: number;
   sizeCny?: number;
   minProb?: number;
-  forceExitAt?: string;
   stopLabel?: string;
   maxPositions?: number;
   entryRule?: string;

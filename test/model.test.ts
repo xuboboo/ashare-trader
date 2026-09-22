@@ -11,7 +11,7 @@ const candidates = () => [
 const base = {
   date: "2026-09-18",
   time: "14:45",
-  horizon: "尾盘买入、次日 10:00 前清仓",
+  horizon: "尾盘买入；退出时点由 Jev 自主决定",
   heldCodes: [] as string[],
   vetoes: {} as Record<string, string>,
   openSlots: 3,

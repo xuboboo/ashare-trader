@@ -79,7 +79,7 @@ export interface Position {
   openingTpDone?: boolean;
   /** 分时均线弱势确认：连续跌破 VWAP 的轮数 */
   vwapBelowRounds?: number;
-  /** Jev 延长标记：延长后止损放宽至成本 ×95%，期限推至 14:50 */
+  /** 旧 SellAdvisor 延长标记；生产 JevModel 不再使用固定期限逻辑。 */
   extensionUntil?: string;
 }
 

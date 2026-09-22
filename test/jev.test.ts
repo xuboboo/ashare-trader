@@ -16,7 +16,7 @@ const cand = (code: string, name: string, over = {}): Scored =>
 const state = (candidates: Scored[], over: Partial<SignalState> = {}): SignalState => ({
   date: "2026-09-21",
   time: "14:45",
-  horizon: "尾盘买入、次日 10:00 前清仓",
+  horizon: "尾盘买入；退出时点由 Jev 自主决定",
   gate: { allowed: true, reasons: ["ok"], status: "open" as const, skipped: [] },
   index: { price: 3900, pct: 0.5, amountYi: 9000, ma5: 3850 },
   candidates,
@@ -145,7 +145,7 @@ describe("Jev 模型接入", () => {
     expect(seen.calls).toBe(1);
   });
 
-  test("模型看到的 state 与规则层同源，且问题里写明成本与退出规则", async () => {
+  test("模型看到的 state 与规则层同源，且问题里写明成本与自主退出规则", async () => {
     const seen: { calls: number; questions?: Record<string, unknown>; state?: unknown } = { calls: 0 };
     await model(fakeAsk({ "002156": 0.9 }, seen)).decide(state([cand("002156", "甲")], { date: "2026-09-24" }));
     const st = seen.state as ReturnType<typeof buildState>;
@@ -156,7 +156,7 @@ describe("Jev 模型接入", () => {
     const q = (seen.questions as Record<string, { type: string; instructions: string }>).q0!;
     expect(q.type).toBe("boolean");
     expect(q.instructions).toContain("扣除约");
-    expect(q.instructions).toContain("10:00");
+    expect(q.instructions).toContain("由 Jev 自主判断退出时点");
   });
 
   test("闸门关闭时不花模型调用", async () => {

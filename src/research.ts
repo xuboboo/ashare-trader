@@ -3,6 +3,7 @@
  *
  * 这套协议故意不兼容旧的 data/daily：旧日线没有 point-in-time 股票池，
  * 也没有 14:45 可见截面和分钟级成交路径，不能再被当作策略回测输入。
+ * 当前 manifest 的 10:00 exitDeadline 是旧固定持有期研究基准，不是生产 Jev 的退出规则。
  */
 import { join, isAbsolute, sep } from "node:path";
 import { config } from "./config";

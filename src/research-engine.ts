@@ -82,7 +82,7 @@ function executableBid(bar: ResearchMinuteBar, fallback: number): number {
   return bar.bid > 0 ? bar.bid : fallback;
 }
 
-/** 用分钟 OHLC + 当时 bid 模拟次日 10:00 前退出，不能回退到次日收盘。 */
+/** 旧固定持有期研究口径：用分钟 OHLC + 当时 bid 模拟次日 10:00 前退出，不能回退到次日收盘。 */
 export function simulateMinuteExit(input: MinuteExitInput): MinuteExitResult {
   const deadline = input.deadline ?? "10:00";
   const bars = [...input.bars].filter((b) => b.time >= "09:30" && b.time <= deadline).sort((a, b) => a.time.localeCompare(b.time));

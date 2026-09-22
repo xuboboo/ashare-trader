@@ -4,10 +4,10 @@
  * 此文件仅保留给旧测试和外部兼容调用，不能作为生产卖出决策源。
  *
  * 历史实现：对已持有的可卖仓位，向 Jev 提出两个可判定的问题——
- *   1)（boolean）"立即按盘口卖出并持有现金，净收益高于按卖出规则持有到下一交易日10:00清仓"的概率；
+ *   1)（boolean）"立即按盘口卖出并持有现金，净收益高于按旧卖出规则继续持有"的概率；
  *   2)（score）若卖出，挂出的限价相对现价的位置：0 = 立即按市价对手价成交，
  *      6 = 挂高约 3% 等更好的价。分数插值成具体限价（offsetPct = score/6 × 3%）。
- * 定位是**辅助**而非接管：止损、10:00 期限这些硬规则永远是底线，它们按触发瞬间
+ * 定位是**辅助**而非接管：止损等硬规则永远是底线，它们按触发瞬间
  * 市价出单不等模型；只有 Jev 自己建议的提前离场单才用 Jev 定的价。
  * 评估随决策轮进行，概率与定价逐次落盘 data/shadow/<日期>-sell-assist.jsonl
  * （engine.persistSellAdvice），两周后用"Jev 建议提前离场的仓位 vs 纯规则持有"
@@ -71,7 +71,7 @@ export const defaultSellAssistAsk: SellAssistAsk = async (inputs) => {
         `持仓 ${p.name}(${p.code})：成本 ${p.entry} 元，现价 ${p.price} 元（浮动 ${p.unrealizedPct.toFixed(1)}%），` +
         `已持有 ${p.heldDays} 个交易日，止损触发线 ${p.stop} 元。两种选择：` +
         `A 立即按盘口卖出并持有现金；B 按既定规则继续持有（跌破 ${p.stop} 元止损，` +
-        `否则到下一交易日 10:00 无条件清仓）。` +
+        `否则继续持有，直到系统硬规则或 Jev 后续判断触发离场）。` +
         `A 的净收益（含全部税费）高于 B 的概率是多少？`,
     };
     questions[`q${i}px`] = {
@@ -88,7 +88,7 @@ export const defaultSellAssistAsk: SellAssistAsk = async (inputs) => {
   });
   const r = await experimental_evaluate({
     model: provider.evaluationModel(config.jevModelId),
-    state: { positions: inputs, rules: "T+1；次日10:00前无条件清仓；含佣金/印花税/过户费" } as never,
+    state: { positions: inputs, rules: "T+1；止损与交易规则为硬约束；含佣金/印花税/过户费" } as never,
     questions: questions as never,
     maxRetries: 0,
     abortSignal: AbortSignal.timeout(config.jevTimeoutMs),

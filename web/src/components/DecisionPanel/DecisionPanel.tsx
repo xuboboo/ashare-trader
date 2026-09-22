@@ -70,7 +70,6 @@ export default function DecisionPanel({ event, history, latest, meta, nowMs }: P
     ageSec === null ? "" : ageSec < 60 ? `${ageSec}s 前` : ageSec < 3600 ? `${Math.round(ageSec / 60)} 分钟前` : `${Math.round(ageSec / 3600)} 小时前`;
 
   const cadence = meta?.decideEveryMs ? `${Math.round(meta.decideEveryMs / 1000)}s` : "60s";
-  const exitAt = meta?.forceExitAt ?? "10:00";
   const bankroll = meta?.bankrollCny !== undefined ? `${(meta.bankrollCny / 10000).toFixed(0)} 万` : "1 万";
   const size = meta?.sizeCny !== undefined ? `${Math.round(meta.sizeCny).toLocaleString()}` : "3,300";
   const stop = meta?.stopLabel ?? "次日止损触发线 −3%";
@@ -92,8 +91,8 @@ export default function DecisionPanel({ event, history, latest, meta, nowMs }: P
       <div className="decisionLabel">常设命令 · STANDING ORDER</div>
       <div className="decisionOrder">
         {`> 盘前预选一次；开仓窗口 ${window}，全程按节奏决策。${entryRule}。
-> 普通 A 股 T+1；策略最迟次日 ${exitAt} 清仓。本金 ¥${bankroll} · 单笔上限 ¥${size} · 最多 ${maxPos} 仓 · ${stop}。
-> Jev 全程判断买入与可裁量卖出；止损、T+1、最迟清仓是系统硬边界，不允许模型绕过。`}
+> 普通 A 股 T+1；退出时点由 Jev 自主判断。本金 ¥${bankroll} · 单笔上限 ¥${size} · 最多 ${maxPos} 仓 · ${stop}。
+> Jev 全程判断买入与可裁量卖出；止损、T+1、涨跌停和交易时段是系统硬边界，不允许模型绕过。`}
       </div>
 
       <div className="decisionLabel" style={{ marginTop: 14 }}>
