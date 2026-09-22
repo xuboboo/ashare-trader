@@ -58,6 +58,9 @@ export const config = {
   gapTrimPct: num("GAP_TRIM_PCT", 3),
   /** 分时均线弱势确认轮数：连续跌破 VWAP 这么多轮才离场，防 3 秒 L1 噪声；1 = 一次跌破即走 */
   vwapConfirmRounds: num("VWAP_CONFIRM_ROUNDS", 2),
+  /** 卖单死单改价：市价连续跌穿在途卖单限价下沿这么多轮就撤单（真人会撤单重挂，
+   *  死单不清会占住唯一的卖坑，把止损/到点清仓全部挡在门外）。0 = 关闭（不推荐）。 */
+  sellRepriceRounds: num("SELL_REPRICE_ROUNDS", 2),
   /** 开盘稳定期（分钟）：开盘后这段时间只观察不出新买入建议（退出管理照常），让开盘脉冲先走出来 */
   openDelayMin: num("OPEN_DELAY_MIN", 15),
   /** Jev 卖出辅助（实验）：每日对可卖仓位问一次"立即离场 vs 按规则持有"的概率，

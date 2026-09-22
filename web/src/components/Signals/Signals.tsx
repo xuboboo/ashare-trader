@@ -15,8 +15,9 @@ interface Props {
 }
 
 /**
- * 建议单：系统的最终产物就是一行行可执行的字段 + 一个回填入口。
- * 一行一单，不用卡片；按钮是文字，不是盒子。
+ * 建议单：引擎的决策产物，一行一单，不用卡片；按钮是文字，不是盒子。
+ * PAPER 模式下引擎自动挂单、按真实盘口影子撮合，持仓/成交随实际成交更新；
+ * 回填只用于记录用户在券商 App 手动执行的真实成交，推送按钮走 QMT sidecar。
  */
 export default function Signals({ allOrders, onFilled, broker }: Props) {
   const api = useApi();
@@ -76,7 +77,7 @@ export default function Signals({ allOrders, onFilled, broker }: Props) {
         <span className="hint">
           {brokerUsable
             ? `QMT sidecar ${broker!.mode} 模式${broker!.mode === "live" ? "（真实委托！）" : "（只记录不下单）"}`
-            : "人工在券商 App 执行，本系统不下达委托"}
+            : "影子盘自动挂单撮合，持仓/成交随实际成交更新；券商 API 未接入，不下真实委托"}
         </span>
         <span className="spacer" />
         <button className="btn" onClick={() => void api.scan().then(onFilled)} disabled={api.busy}>
@@ -135,9 +136,12 @@ export default function Signals({ allOrders, onFilled, broker }: Props) {
                       </button>
                     ) : null}
                     {o.status === "pending" ? (
-                      <button className="btn btnPrimary" onClick={() => prefill(o)}>
-                        回填
-                      </button>
+                      <>
+                        <span className="muted tiny">挂单中</span>
+                        <button className="btn btnPrimary" onClick={() => prefill(o)}>
+                          回填
+                        </button>
+                      </>
                     ) : (
                       <span className="muted tiny">
                         {o.status === "filled" ? `已成交 ${o.fill ? fmtPrice(o.fill.price) : ""}` : o.status}

@@ -324,10 +324,17 @@ export class Book {
     const p = this.positions.get(fill.code);
     const qtyBefore = p?.qty ?? 0;
     let realized: number | undefined;
-    if (p && qtyBefore > 0) {
-      const sold = Math.min(fill.qty, qtyBefore);
+    // A 股两条硬规则在账本层强制：T+1（今日买入不可卖）与不可超卖。
+    // 只有"持仓里 T+1 可卖"的部分才可能真实成交，超出部分记为无效并写进 note。
+    // （人工回填与影子卖单撞车、或给已清仓/当日买入标的记卖出时会出现这种成交。）
+    const sold = Math.min(fill.qty, p ? p.sellable : 0);
+    const fillFeeShare = fill.qty > 0 ? costs.total * (sold / fill.qty) : 0;
+    if (sold < fill.qty) {
+      fill.note = `${fill.note ? fill.note + "；" : ""}仅 ${sold}/${fill.qty} 股有效：超出 T+1 可卖或持仓的部分被拒绝`;
+    }
+    if (p && sold > 0) {
       const allocBuyFee = round2((p.feesPaid * sold) / qtyBefore);
-      realized = round2((fill.price - p.avgPrice) * sold - costs.total - allocBuyFee);
+      realized = round2((fill.price - p.avgPrice) * sold - fillFeeShare - allocBuyFee);
       p.qty -= sold;
       p.sellable = Math.max(0, p.sellable - sold);
       p.feesPaid = round2(p.feesPaid - allocBuyFee);
@@ -336,7 +343,7 @@ export class Book {
       fill.realizedPnl = realized;
       this.realizedTotal = round2(this.realizedTotal + realized);
     }
-    this.cash = round2(this.cash + amount - costs.total);
+    this.cash = round2(this.cash + fill.price * sold - fillFeeShare);
     return realized;
   }
 

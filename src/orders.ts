@@ -53,6 +53,8 @@ export interface SuggestedOrder {
   seenHigh: number;
   /** 开始挂着的时刻（epoch ms），用于区分“挂单前的下影线” */
   restingSince: number;
+  /** 市价连续低于卖单限价下沿的轮数（死单改价检测用，买入侧不用） */
+  staleBelowRounds?: number;
 }
 
 export interface Clock {
@@ -166,6 +168,41 @@ export function makeExitOrder(
 
 export function rejectOrder(order: SuggestedOrder, why: string): SuggestedOrder {
   return { ...order, status: "rejected", rejectReason: why };
+}
+
+/**
+ * 死单改价：市价连续跌穿在途卖单限价下沿 rounds 轮就撤掉这张单。
+ *
+ * 真人不会让一张永远成交不了的委托占着卖坑 —— 本系统同一标的同时只允许一张
+ * 在途卖单（防重复卖出），死单不清，止损/到点清仓/Jev 卖出就全部被挡住，
+ * 持仓等于没有保护。撤掉之后退出阶梯同一轮就会按现价重新出单：继续阴跌就
+ * 逐轮跟随下移，等价于触发止损后的市价卖出；价格回来则按新限价带正常挂。
+ * 反方向（市价高于限价带）不用管：限价卖单会按带内对手价成交，真实市场同理。
+ * 市价在带内或高于带内时清零计数，防 3 秒切片噪声反复触发。
+ */
+export function cancelStaleSells(
+  pending: Map<string, SuggestedOrder>,
+  snapshots: Map<string, Snapshot>,
+  rounds = config.sellRepriceRounds,
+): { cancelled: SuggestedOrder[]; changed: boolean } {
+  if (rounds <= 0) return { cancelled: [], changed: false };
+  const cancelled: SuggestedOrder[] = [];
+  for (const [id, o] of [...pending]) {
+    if (o.side !== "sell" || o.status !== "pending") continue;
+    const sn = snapshots.get(o.code);
+    if (!sn || !(sn.price > 0)) continue;
+    if (sn.price >= o.limitLow) {
+      o.staleBelowRounds = 0;
+      continue;
+    }
+    o.staleBelowRounds = (o.staleBelowRounds ?? 0) + 1;
+    if (o.staleBelowRounds < rounds) continue;
+    o.status = "cancelled";
+    o.rejectReason = `撤单改价：现价 ${sn.price} 低于限价下沿 ${o.limitLow} 连续 ${o.staleBelowRounds} 轮，撤单重挂`;
+    pending.delete(id);
+    cancelled.push(o);
+  }
+  return { cancelled, changed: cancelled.length > 0 };
 }
 
 /** 每轮心跳把挂单生效后的价格区间往前推一格。 */

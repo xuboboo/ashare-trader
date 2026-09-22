@@ -18,7 +18,7 @@ import { FactorModel, type Decision, type DailyBias, type Model, type SignalStat
 import { JevModel } from "./jev";
 import { LocalModel } from "./local";
 import { SellAdvisor, type SellAssistInput } from "./sell-assist";
-import { makeBuyOrder, makeExitOrder, restingKey, restingKeys, settlePending, type Clock, type SuggestedOrder } from "./orders";
+import { cancelStaleSells, makeBuyOrder, makeExitOrder, restingKey, restingKeys, settlePending, type Clock, type SuggestedOrder } from "./orders";
 import { fetchIndexDaily, fetchIndex, fetchZtPool, fetchSnapshots, quoteAgeSec, type DailyBar, type Snapshot } from "./quotes";
 import { riskBrake, type RiskBrake } from "./risk";
 import { bj, canTrade, hhmmOf, liveQuotes, phaseOf, type Phase, sessionNow, tradingElapsedMin } from "./session";
@@ -408,6 +408,7 @@ export class Engine {
     const trigger = forceTrigger ?? triggerOf(phase, clock.minutes);
     const force = forceTrigger === "force-scan";
     const newOrders: SuggestedOrder[] = [];
+    const cancelledOrders: SuggestedOrder[] = [];
     let decision: Decision | null = null;
 
     if (force || trading) {
@@ -417,6 +418,12 @@ export class Engine {
 
       const hasSellable = [...this.book.positions.values()].some((p) => p.sellable > 0);
       if (trading && liveQuotes(phase) && usable && hasSellable) {
+        // ---- 死单改价：先撤掉被市价击穿的在途卖单，退出阶梯/模型卖出才能按现价重出 ----
+        const stale = cancelStaleSells(this.pending, this.snapshots);
+        if (stale.changed) {
+          cancelledOrders.push(...stale.cancelled);
+          await this.persistPending();
+        }
         // ---- Jev 10:00 延长评估：让 Jev 逐仓判断延长还是离场 ----
         if (clock.minutes >= config.forceExitMin && config.typesafeApiKey && this.extEvalDate !== clock.date) {
           this.extEvalDate = clock.date;
@@ -445,6 +452,8 @@ export class Engine {
               const sn = this.snapshots.get(a.code);
               if (!pos || !sn) continue;
               if (a.suggestExit) {
+                // 同标的已有在途卖单（含尚未撤净的死单）就不叠加：两张卖单同时成交会超卖
+                if ([...this.pending.values()].some((o) => o.side === "sell" && o.code === a.code)) continue;
                 // Jev 决定离场：生成退出单
                 const o = makeExitOrder(pos, sn, clock, `Jev 卖出决策（p=${(a.pExitBetter * 100).toFixed(0)}%）：确认弱势提前离场`, pos.sellable);
                 if (o) {
@@ -631,7 +640,10 @@ export class Engine {
       scan: { scored: scored.length, rejected, top },
       decision,
       risk: this.lastRisk,
-      orders: newOrders,
+      // 事件带全量订单视图：新建的 + 本轮撤销的 + 当前全部在途。
+      // 在途单每轮重发不是浪费 —— 重启后内存事件流清空，UI 靠它恢复真实挂单视图；
+      // 撤单也要出现在事件里，否则面板上那张单永远停在“挂单中”。
+      orders: [...newOrders, ...cancelledOrders, ...this.pending.values()],
       fills,
       positions: this.positionView(),
       totals: this.book.totals(),
