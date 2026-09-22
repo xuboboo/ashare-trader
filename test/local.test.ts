@@ -116,6 +116,7 @@ describe("本地概率模型 LocalModel", () => {
     const d = await new LocalModel({ weights: null, budgetCny: 50_000 }).decide(state([cand("002156", "甲")]));
     expect(d.modelFailed).toBe(true);
     expect(d.picks).toHaveLength(1); // 规则层结论仍有效
+    expect(d.trace).toMatchObject({ source: "local", status: "failed", call: "none" });
   });
 
   test("闸门关闭不花模型；同一输入概率完全确定", async () => {
@@ -123,6 +124,7 @@ describe("本地概率模型 LocalModel", () => {
     const m = new LocalModel({ weights: w, budgetCny: 50_000 });
     const closed = await m.decide(state([cand("002156", "甲")], { gate: { allowed: false, reasons: ["跌破 5 日线"] } }));
     expect(closed.action).toBe("hold");
+    expect(closed.trace).toMatchObject({ source: "hard-rule", status: "skipped-hard-rule", call: "none" });
     const p1 = (await m.decide(state([cand("002156", "甲")]))).picks[0]!.probability;
     const p2 = (await m.decide(state([cand("002156", "甲")]))).picks[0]!.probability;
     expect(p1).toBe(p2);

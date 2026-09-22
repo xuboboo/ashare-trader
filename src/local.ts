@@ -17,7 +17,7 @@ import { join } from "node:path";
 import { config } from "./config";
 import { roundTrip } from "./costs";
 import type { Scored } from "./factors";
-import { FactorModel, type Decision, type Model, type Pick, type SignalState } from "./model";
+import { FactorModel, type Decision, type DecisionTrace, type Model, type Pick, type SignalState } from "./model";
 import { eligible as pickEligible } from "./jev";
 
 /** 大盘上下文：实盘来自 SignalState.index，训练来自指数日线 —— 两边算出同一个数。 */
@@ -200,7 +200,15 @@ export class LocalModel implements Model {
 
     if (!s.allowed.buy || !s.gate.allowed || s.openSlots <= 0 || list.length === 0) {
       // 闸门关着或没额度：这是规则层的结论，不需要模型
-      return this.fallback.decide(s);
+      const d = await this.fallback.decide(s);
+      const trace: DecisionTrace = {
+        source: "hard-rule",
+        model: this.name,
+        call: "none",
+        status: "skipped-hard-rule",
+        reason: !s.allowed.buy || !s.gate.allowed || s.openSlots <= 0 ? "硬闸门关闭或没有开仓额度" : "硬筛选后没有可执行候选",
+      };
+      return { ...d, trace };
     }
 
     const w = await this.weights();
@@ -210,7 +218,12 @@ export class LocalModel implements Model {
         console.warn("[local] 没有可用的 model.json（先跑 bun run scripts/train-model.ts），降级为 FactorModel");
       }
       const d = await this.fallback.decide(s);
-      return { ...d, modelFailed: true, latencyMs: performance.now() - t0 };
+      return {
+        ...d,
+        modelFailed: true,
+        latencyMs: performance.now() - t0,
+        trace: { source: "local", model: this.name, call: "none", status: "failed", reason: "model.json 不存在或格式无效" },
+      };
     }
 
     // 大盘上下文：与训练侧（指数日线）同一口径
@@ -243,7 +256,12 @@ export class LocalModel implements Model {
     if (!probs.size) {
       console.error("[local] 特征全部异常，降级为 FactorModel");
       const d = await this.fallback.decide(s);
-      return { ...d, modelFailed: true, latencyMs: performance.now() - t0 };
+      return {
+        ...d,
+        modelFailed: true,
+        latencyMs: performance.now() - t0,
+        trace: { source: "local", model: this.name, call: "none", status: "failed", reason: "本地模型特征全部异常" },
+      };
     }
 
     const picks: Pick[] = list
@@ -273,6 +291,7 @@ export class LocalModel implements Model {
       late: false,
       inputTokens: 0,
       modelFailed: false,
+      trace: { source: "local", model: this.name, call: "none", status: "ok" },
     };
   }
 }

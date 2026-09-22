@@ -404,7 +404,7 @@ export class Engine {
     // 交易时段全程决策（不再只限尾盘）：
     //   盘前 09:05 起每日一次预选（用最近收盘快照，只出观点不下单）；
     //   连续竞价全程按 DECIDE_EVERY_MS 节奏做买入决策并出建议单；
-    //   退出管理只要持仓可卖、行情可用就每轮评估（纯规则，不花模型调用）。
+    //   可卖持仓先跑止损保护，再按 DECIDE_EVERY_MS 交给 Jev 判断其余卖出。
     const trigger = forceTrigger ?? triggerOf(phase, clock.minutes);
     const force = forceTrigger === "force-scan";
     const newOrders: SuggestedOrder[] = [];
@@ -1037,6 +1037,14 @@ export class Engine {
     return {
       name: "ashare-trader",
       model: this.model.name,
+      modelTransport:
+        config.model === "jev"
+          ? config.typesafeApiKey
+            ? "jev-remote-configured"
+            : "jev-fail-closed-not-configured"
+          : config.model === "local"
+            ? "local-file"
+            : "rules-factor",
       llm: this.advisory.enabled ? config.llmModel : "off",
       paper: config.paper,
       universe: this.universe.entries.length,

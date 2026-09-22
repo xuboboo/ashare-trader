@@ -21,7 +21,7 @@ const now = clockNow();
 const s = sessionNow(new Date(), engine.calendar.isTradingDay(now.date));
 const m = engine.meta();
 console.log(
-  `ashare-trader · model=${m.model} · LLM=${m.llm} · ${m.paper ? "PAPER（影子成交，不下真实委托）" : "!! 需要真实下单通道"} · ` +
+  `ashare-trader · model=${m.model} · transport=${m.modelTransport} · advisory=${m.llm} · ${m.paper ? "PAPER（影子成交，不下真实委托）" : "!! 需要真实下单通道"} · ` +
     `股票池 ${m.universe} · 日历${m.calendarStale ? "退化(周一~五)" : `已加载(${engine.calendar.size}天)`} · ${s.phase} · ${s.next} · :${config.port}`,
 );
 

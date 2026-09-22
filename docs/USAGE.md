@@ -14,14 +14,14 @@ cd web ; bun install ; bun run dev   # 仪表盘 :3006
 启动横幅就是体检报告：
 
 ```
-ashare-trader · model=factor · LLM=off · PAPER（影子成交，不下真实委托） · 股票池 300 ·
+ashare-trader · model=factor · transport=rules-factor · advisory=off · PAPER（影子成交，不下真实委托） · 股票池 300 ·
 日历已加载(250天) · continuous · 全程决策中（盘中+尾盘同规则） · :3005
 ```
 
 - 默认只监听 `127.0.0.1`。要从局域网/手机直接访问，设 `API_HOST=0.0.0.0` **并且同时设 `API_TOKEN`**；
   远程面板用 `?api=http://…&token=…`
 - `日历退化(周一~五)` → 上证指数日线三个源都没拉到，交易日判定在猜，别信当日信号
-- `LLM=off` → 没配 `LLM_API_KEY`，情绪闸门与个股 veto 不生效（规则层照常工作）
+- `advisory=off` → 没配 `LLM_API_KEY`，情绪闸门与个股 veto 不生效；`transport=jev-remote-configured` 才表示 Jev 已配置远端通道
 - 时段显示 `closed` → 非交易日/非交易时段，引擎每 60s 一次心跳，不会去拉 300 支快照
 
 ## 盘中怎么用

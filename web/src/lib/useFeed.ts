@@ -97,6 +97,7 @@ function parseMeta(raw: Record<string, unknown>): Meta | null {
   return {
     name: typeof raw.name === "string" ? raw.name : "ashare-trader",
     model: raw.model,
+    modelTransport: typeof raw.modelTransport === "string" ? raw.modelTransport : undefined,
     llm: typeof raw.llm === "string" ? raw.llm : "off",
     paper: raw.paper !== false,
     universe: Number(raw.universe) || 0,

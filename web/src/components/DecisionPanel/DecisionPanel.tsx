@@ -83,7 +83,7 @@ export default function DecisionPanel({ event, history, latest, meta, nowMs }: P
       <div className="head">
         <h2>模型决策</h2>
         <span className="hint">
-          {meta ? `${meta.model} · 每 ${cadence} 一轮` : "等待后端"}
+          {meta ? `${meta.model} · ${meta.modelTransport ?? "transport-unknown"} · 每 ${cadence} 一轮` : "等待后端"}
           {` · ${traceLabel}`}
         </span>
       </div>

@@ -182,6 +182,7 @@ export interface TickEvent {
 export interface Meta {
   name: string;
   model: string;
+  modelTransport?: string;
   llm: string;
   paper: boolean;
   universe: number;
