@@ -3,10 +3,13 @@
  *   "Jev 挑的股票，扣成本后的未来收益，真的比从同一候选池里随机挑的强吗？"
  *
  * 数据来源：
- *   - data/jev-journal.jsonl：引擎每轮买入决策追加的 {date, picked, pool}。
+ *   - data/jev-journal.jsonl：引擎每轮买入决策追加的 {date, time, phase, executable, picked, pool}。
+ *     只有 executable === true（连续竞价 + 行情新鲜）的轮次才是样本；盘后 force-scan、
+ *     盘前预选与旧格式记录一律剔除并计入 excluded（它们真调了模型，但永远不可能成交）。
  *   - research/daily/<code>.json：raw 日线（未来 N 日真实价格）。
- * 口径：以信号日 D 收盘价为买入参考，持有 HOLD 个交易日后收盘为卖出，扣往返成本 bps。
- *   Jev 组 = 该轮 picked；随机组 = 用 date 定种从 pool 里抽 picked.length 个（可复现）；
+ * 口径（与日频基线同一执行约定，不得拿信号日收盘价当成交价）：
+ *   信号日 D -> D+1 开盘买入 -> 持 hold 个交易日 -> D+1+hold 收盘卖出，扣往返成本 bps。
+ *   Jev 组 = 该轮 picked；随机组 = 用 date 定种从 pool 里抽 picked.length 个（可复现，picked 为空时抽 1 个）；
  *   全体 = 该轮 pool 均值。攒够样本才给结论，不足会如实标注。
  *
  * 用法：bun scripts/jev-vs-random.ts [--hold=5]
@@ -19,6 +22,10 @@ import { roundTrip } from "../src/costs";
 export interface JournalEntry {
   date: string;
   time: string;
+  /** 产生这条记录时的交易时段（continuous / lunch / closed / …）。旧格式无此字段。 */
+  phase?: string;
+  /** 这一轮的判断能不能真的落成委托（连续竞价 + 行情新鲜）。false = 盘后复盘/盘前预选/降级轮次。 */
+  executable?: boolean;
   model: string;
   threshold: number;
   pool: string[];
@@ -81,6 +88,8 @@ export interface GroupStat {
 }
 export interface AnalysisResult {
   days: number;
+  /** 被剔除的不可执行样本条数（盘后 force-scan、盘前预选、旧格式无标记的记录）。 */
+  excluded: number;
   costBps: number;
   hold: number;
   jev: GroupStat;
@@ -92,9 +101,14 @@ export interface AnalysisResult {
 
 /** 纯函数：给定 journal + 日线表，产出对照结论（可单测）。 */
 export function analyzeJournal(entries: JournalEntry[], dailyByCode: Map<string, ResearchDailyBar[]>, hold = 5, costBps = 36.9): AnalysisResult {
+  // 只认真可执行样本：盘后 force-scan 与盘前预选也会真调 Jev，但拿的是隔夜快照、
+  // 永远不可能成交，拿它们给模型打分等于用噪声当证据。
+  // 旧格式（没有 executable 字段）一律剔除：无法证明它来自新鲜行情，宁缺不滥。
+  const usable = entries.filter((e) => e.executable === true);
+  const excluded = entries.length - usable.length;
   // 每个交易日只取"当天最后一条"决策（收盘前最完整的判断），避免一天内 15s 一轮重复计入
   const byDate = new Map<string, JournalEntry>();
-  for (const e of entries) {
+  for (const e of usable) {
     const cur = byDate.get(e.date);
     if (!cur || e.time >= cur.time) byDate.set(e.date, e);
   }
@@ -117,12 +131,13 @@ export function analyzeJournal(entries: JournalEntry[], dailyByCode: Map<string,
   const diff = jevAvg != null && randAvg != null ? jevAvg - randAvg : null;
   const days = byDate.size;
   let verdict: string;
-  if (days < 10) verdict = `样本仅 ${days} 个交易日，不足以下结论（建议 ≥10）；继续让引擎每天跑`;
+  if (days < 10) verdict = `样本仅 ${days} 个交易日（已剔除 ${excluded} 条不可执行/旧格式记录），不足以下结论（建议 ≥10）；继续让引擎在交易时段跑`;
   else if (diff != null && diff > 20 && (jevAvg ?? 0) > 0) verdict = `Jev 选股的净收益高出随机 ${diff.toFixed(0)}bp 且为正 —— 有正向信号，值得继续验证`;
   else if (diff != null && Math.abs(diff) <= 20) verdict = `Jev 与随机差 ${diff.toFixed(0)}bp（≈噪声）—— 目前看不出 Jev 比瞎猜强`;
   else verdict = `Jev 选股净收益 ${jevAvg?.toFixed(0)}bp vs 随机 ${randAvg?.toFixed(0)}bp —— 至少在本窗口没有优势`;
   return {
     days,
+    excluded,
     costBps,
     hold,
     jev: { avg: jevAvg, winPct: win(jevVals), n: jevVals.length },
@@ -163,6 +178,7 @@ async function main(): Promise<void> {
   const r = analyzeJournal(entries, dailyByCode, hold, costBps);
   const fm = (x: number | null) => (x == null ? "n/a" : x.toFixed(0));
   console.log(`\n=== Jev vs 随机（hold=${r.hold}日, 成本=${r.costBps.toFixed(1)}bp, 交易日=${r.days}）===`);
+  if (r.excluded) console.log(`已剔除 ${r.excluded} 条不可执行样本（盘后 force-scan / 盘前预选 / 旧格式无 executable 标记）`);
   console.log(`组别        平均净收益bp   胜率%    样本笔数`);
   console.log(`Jev 选中    ${fm(r.jev.avg).padStart(8)}      ${fm(r.jev.winPct).padStart(5)}    ${r.jev.n}`);
   console.log(`随机基线    ${fm(r.random.avg).padStart(8)}      ${fm(r.random.winPct).padStart(5)}    ${r.random.n}`);

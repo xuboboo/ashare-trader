@@ -201,8 +201,14 @@ export class Engine {
     return join(config.dataDir, "jev-journal.jsonl");
   }
 
+  /**
+   * 对照实验的原始样本行。`executable` 标的是"这一轮的判断真的可以落成委托"：
+   * 盘后 /scan 与 once.ts 的 force-scan 也会真调 Jev（那是链路验证，该花钱），
+   * 但它拿的是隔夜快照、且永远不可能成交 —— 混进实验就等于用不可执行的样本给模型打分。
+   */
   private async appendJournal(entry: {
-    date: string; time: string; model: string; threshold: number; pool: string[]; picked: string[];
+    date: string; time: string; phase: string; executable: boolean;
+    model: string; threshold: number; pool: string[]; picked: string[];
   }): Promise<void> {
     await appendFile(this.journalFile(), JSON.stringify(entry) + "\n", "utf8");
   }
@@ -533,11 +539,16 @@ export class Engine {
         if (trading && preMarket) this.preBuyDate = clock.date;
         else this.lastBuyMs = nowMs;
 
+        // "能落成委托"的唯一判据：连续竞价 + 行情新鲜可用。usable 已含 trading/canTrade/非降级。
+        // 凡是要拿来做对照评分的落盘（影子、journal）都必须带上它 —— 盘后 force-scan 也会真调模型，
+        // 但它拿的是隔夜快照、永远不可能成交，混进去就是拿噪声给模型打分。
+        const actionable = liveQuotes(phase) && usable;
+
         // 影子对照：其余模型对同一状态的判断也落盘（防"三选一"的模型挑选偏差）。
-        // 只记录，不出单；失败静默跳过，绝不影响主链路。
+        // 只记录，不出单；失败静默跳过，不会拖累主链路。
         if (decision) {
           try {
-            await this.recordShadow(clock, scored, gate, decision);
+            await this.recordShadow(clock, scored, gate, decision, { phase, executable: actionable });
           } catch {
             /* 影子记录失败不影响主流程 */
           }
@@ -555,6 +566,8 @@ export class Engine {
             await this.appendJournal({
               date: clock.date,
               time: clock.time,
+              phase,
+              executable: actionable,
               model: decision.trace.source,
               threshold: config.jevMinProb,
               pool: eligibleCodes,
@@ -566,11 +579,11 @@ export class Engine {
         }
 
         // 盘前预选只出观点；连续竞价与 force（复盘）出建议单
-        if (force || (trading && liveQuotes(phase) && usable)) {
+        if (force || actionable) {
           const resting = restingKeys(this.pending);
           // 只有行情可用的窗口里才把单注册成在途单；否则 force（收盘后 /scan）只是
           // 复盘用的“本轮观点”，不能直接进 pending —— 不然面板上会看到一弹出单然后被作废。
-          const register = trading && liveQuotes(phase) && usable;
+          const register = actionable;
           // 每轮最多执行 maxBuysPerRound 个新买入（默认 1）：picks 按置信度排序，
           // 只执行最前面的那个；其余的要等下一轮模型用新鲜行情重新确认。
           // 真人不会同一分钟无脑连买三只 —— 每笔入场都该是当下独立确认的判断。
@@ -748,15 +761,22 @@ export class Engine {
    * 影子对照：同一份状态喂给其余模型，把它们的判断追加落盘到 data/shadow/<date>.jsonl。
    * 目的：factor / local / jev 三选一容易变成"挑表现最好的"（回测过拟合）；
    * 从现在开始让它们在同一个状态上并行产出 forward 记录，未来对比才有资格。
+   * `sample` 把本轮样本的出处与否可执行性一起落盘，与 journal 同一口径。
    */
-  private async recordShadow(clock: EngineClock, scored: Scored[], gate: Gate, active: Decision): Promise<void> {
+  private async recordShadow(
+    clock: EngineClock,
+    scored: Scored[],
+    gate: Gate,
+    active: Decision,
+    sample: { phase: Phase; executable: boolean },
+  ): Promise<void> {
     const models: Model[] = [];
     if (config.model !== "factor") models.push(new FactorModel());
     if (config.model !== "local") models.push(new LocalModel());
     if (config.model !== "jev" && config.typesafeApiKey) models.push(new JevModel());
     if (!models.length) return;
     const st = this.signalState(clock, scored, gate, "buy", this.riskNow());
-    const shadow: { model: string; action: string; modelFailed?: boolean; trace?: Decision["trace"]; picks: { code: string; probability: number }[] }[] = [];
+    const shadow: ShadowOpinion[] = [];
     for (const m of models) {
       try {
         const d = await m.decide(st);
@@ -765,15 +785,7 @@ export class Engine {
         shadow.push({ model: m.name, action: "error", picks: [] });
       }
     }
-    const row = {
-      ts: Date.now(),
-      time: clock.time,
-      active: config.model,
-      action: active.action,
-      activeTrace: active.trace,
-      picks: active.picks.map((p) => ({ code: p.code, probability: p.probability })),
-      shadow,
-    };
+    const row = buildShadowRow({ time: clock.time, phase: sample.phase, executable: sample.executable, decision: active, shadow });
     const dir = join(config.dataDir, "shadow");
     await mkdir(dir, { recursive: true });
     const file = join(dir, `${clock.date}.jsonl`);
@@ -1215,6 +1227,51 @@ export function buyDecisionDue(a: {
 /** 两笔新仓之间是否已过最短间隔。抽成纯函数便于单测（防“同一分钟无脑冲多只”）。 */
 export function canOpenNewPosition(nowMs: number, lastOpenMs: number, gapMs: number): boolean {
   return nowMs - lastOpenMs >= gapMs;
+}
+
+/** 影子对照里单个模型的判断结果（只留可比字段，理由/延迟这类不进流水）。 */
+export interface ShadowOpinion {
+  model: string;
+  action: string;
+  modelFailed?: boolean;
+  trace?: Decision["trace"];
+  picks: { code: string; probability: number }[];
+}
+
+/**
+ * 影子对照的一行。`phase` 与 `executable` 必须显式写出来（false 也写），
+ * 否则日后做“哪个模型更强”的对比时，盘后 force-scan 的隔夜快照会被当成有效样本 ——
+ * 与对照实验同源的缺陷，抽成纯函数便于单测。
+ */
+export function buildShadowRow(a: {
+  time: string;
+  phase: Phase;
+  executable: boolean;
+  decision: Pick<Decision, "action" | "trace" | "picks">;
+  shadow: ShadowOpinion[];
+  ts?: number;
+}): {
+  ts: number;
+  time: string;
+  phase: Phase;
+  executable: boolean;
+  active: string;
+  action: string;
+  activeTrace: Decision["trace"];
+  picks: { code: string; probability: number }[];
+  shadow: ShadowOpinion[];
+} {
+  return {
+    ts: a.ts ?? Date.now(),
+    time: a.time,
+    phase: a.phase,
+    executable: a.executable,
+    active: config.model,
+    action: a.decision.action,
+    activeTrace: a.decision.trace,
+    picks: a.decision.picks.map((p) => ({ code: p.code, probability: p.probability })),
+    shadow: a.shadow,
+  };
 }
 
 export function clockNow(d: Date = new Date()): EngineClock {
