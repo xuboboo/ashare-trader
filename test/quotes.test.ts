@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { parseKlines, parseQuoteAt, parseTencentRow, quoteAgeSec } from "../src/quotes";
+import { parseKlines, parseQuoteAt, parseTencentRow, quoteAgeSec, todayTape, type TickTrade } from "../src/quotes";
 
 /**
  * 契约测试：用 2026-09-18 真实录制的一行行情锁字段序号。
@@ -103,5 +103,27 @@ describe("行情新鲜度", () => {
   test("没带时间戳时返回 -1（未知），而不是假装很新鲜", () => {
     expect(quoteAgeSec([{ ...parseTencentRow(RECORDED)!, quoteAt: 0 }])).toBe(-1);
     expect(quoteAgeSec([])).toBe(-1);
+  });
+});
+
+describe("分笔剪成只剩今天（隔日数据不得充当排队证据）", () => {
+  const t = (time: string, price = 10, shares = 100): TickTrade => ({ time, price, shares, buyerAggressor: true });
+
+  test("早盘那批全是昨天的：时间回落 = 换日边界，只留最后一段", () => {
+    const rows = [t("14:45:03"), t("15:29:50"), t("09:31:00"), t("09:32:00")];
+    expect(todayTape(rows, "09:35:59").map((r) => r.time)).toEqual(["09:31:00", "09:32:00"]);
+  });
+
+  test("昨天整批、今天还没成交 -> 空集（宁可没有被动成交证据，也不拿隔日的）", () => {
+    // 没有回落可认（整批都是昨天下午），靠“时间戳比现在晚”这一条掉
+    expect(todayTape([t("13:27:45"), t("15:29:50")], "09:31:59")).toEqual([]);
+  });
+
+  test("单日全今天的下午批次：不误删", () => {
+    expect(todayTape([t("13:00:00"), t("14:45:03")], "15:30:59")).toHaveLength(2);
+  });
+
+  test("空输入不炸", () => {
+    expect(todayTape([], "09:35:59")).toEqual([]);
   });
 });

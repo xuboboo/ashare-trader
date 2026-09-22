@@ -199,6 +199,21 @@ export async function fetchTickTrades(code: string, pos = -1500): Promise<TickTr
   return out;
 }
 
+/**
+ * 把分笔剪成"只剩今天"。`f51` 只有 HH:MM:SS 没有日期，而接口只回最近 N 条：
+ * 实测 1500 条在活跃票上只覆盖尾盘两小时（600000：13:27~15:29），所以早盘拉到的
+ * 一整批全部是昨天的。两道闸：
+ *   1) 序列里最后一次"时间回落"就是换日边界（昨天 15:30 -> 今天 09:15），只留最后一段；
+ *   2) 时间戳比现在晚的行必然不是今天的（早盘时昨天的下午尾巴全靠这一条掉）。
+ * 今天还没有成交时返回空集 —— 比"拿昨天的量当今天的排队证据"好。
+ */
+export function todayTape(rows: TickTrade[], nowHms: string): TickTrade[] {
+  if (!rows.length) return rows;
+  let start = 0;
+  for (let i = 1; i < rows.length; i++) if (rows[i]!.time < rows[i - 1]!.time) start = i;
+  return rows.slice(start).filter((t) => t.time <= nowHms);
+}
+
 /** 上证指数：大盘闸门用。symbol 与平安银行撞码，必须带 sh 前缀走这里。 */
 export async function fetchIndex(): Promise<{ price: number; pct: number; amountYi: number; snapshot: Snapshot }> {
   const text = await httpGet("https://qt.gtimg.cn/q=sh000001", { referer: "https://gu.qq.com/" });

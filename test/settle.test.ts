@@ -6,6 +6,7 @@ import {
   restingKey,
   restingKeys,
   settlePending,
+  tryPaperFill,
   type SuggestedOrder,
 } from "../src/orders";
 import { Book, makeFill } from "../src/state";
@@ -264,5 +265,27 @@ describe("排队撮合（分笔证据）", () => {
     expect(fills).toHaveLength(1);
     expect(fills[0]!.price).toBe(10.52);
     expect(fills[0]!.side).toBe("buy");
+  });
+
+  test("隔日分笔不充当今天的排队证据（早盘拉到的 1500 条全是昨天的）", () => {
+    const { pending, snap } = restingSell();
+    // 真实形态：昨天尾盘挂在 10.48 的卖单被大量主动买吃掉（14:45），今天 09:31 才开盘。
+    // 没 todayTape 这一刀，“挂单时刻之后”的字符串比较挡不住昨天的 14:45（09:35 < 14:45），
+    // 那 50000 股会被当成今天的排队量 → 凭空按 10.48 成交，还是个高于市价、对我们有利的好价。
+    const tapes = tape([
+      { time: "14:45:03", price: 10.48, shares: 50_000, buyerAggressor: true },
+      { time: "09:31:00", price: 10.42, shares: 100, buyerAggressor: true },
+    ]);
+    expect(settle(pending, new Map([["600000", snap]]), { tapes }).fills).toHaveLength(0);
+  });
+
+  test("反证：绕过 todayTape 就会凭空成交（说明这一刀确实在挡东西）", () => {
+    const { o, snap } = restingSell();
+    const fill = tryPaperFill(o, snap, clock2, [
+      { time: "14:45:03", price: 10.48, shares: 50_000, buyerAggressor: true },
+    ]);
+    expect(fill).toBeTruthy(); // 同一批行、不经剪切，它真的能成交
+    expect(fill!.price).toBe(10.48);
+    expect(fill!.qty).toBe(300);
   });
 });

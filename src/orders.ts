@@ -6,7 +6,7 @@ import { config } from "./config";
 import { buyCosts, minCommissionWarn, sellCosts, slipFillPrice } from "./costs";
 import { stopLevel } from "./exit";
 import type { Scored } from "./factors";
-import type { Level, Snapshot, TickTrade } from "./quotes";
+import { todayTape, type Level, type Snapshot, type TickTrade } from "./quotes";
 import { makeFill, round2, type DecisionSource, type Fill, type Position } from "./state";
 import { sharesForBudget, tickPrice, type Side } from "./symbols";
 
@@ -445,6 +445,13 @@ export function settlePending(
   },
 ): { fills: Fill[]; changed: boolean } {
   const todayCompact = args.clock.date.replace(/-/g, "");
+  // 分笔接口只回“最近 N 条”且每行只有 HH:MM:SS：早盘拉到的那一整批全是昨天的。
+  // 不剪掉就会拿昨天的对手量当今天的排队证据，凭空按挂价成交，而且成交价对我们有利
+  //（卖单成交在高于市价的限价上）→ 系统性高估影子盘。在入口剪一次，不逐单重算。
+  const nowHms = `${args.clock.time}:59`;
+  const tapes = args.tapes
+    ? new Map([...args.tapes].map(([code, rows]) => [code, todayTape(rows, nowHms)] as const))
+    : undefined;
   const fills: Fill[] = [];
   let changed = false;
   for (const [id, order] of [...pending]) {
@@ -459,7 +466,7 @@ export function settlePending(
     if (!sn || sn.quoteDay !== todayCompact) continue;
     if (order.restingSince >= args.roundStartMs) continue; // 本轮刚挂出去：下一轮才可能成交
     updateResting(order, sn);
-    const fill = args.paper ? tryPaperFill(order, sn, args.clock, args.tapes?.get(order.code)) : null;
+    const fill = args.paper ? tryPaperFill(order, sn, args.clock, tapes?.get(order.code)) : null;
     if (!fill) continue;
     fills.push(fill);
     changed = true;
