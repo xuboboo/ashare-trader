@@ -19,7 +19,7 @@ import { JevModel } from "./jev";
 import { LocalModel } from "./local";
 import { SellAdvisor, type SellAdvice, type SellAssistInput } from "./sell-assist";
 import { availableCash, cancelStaleSells, makeBuyOrder, makeExitOrder, restingKey, restingKeys, settlePending, type Clock, type SuggestedOrder } from "./orders";
-import { fetchIndexDaily, fetchIndex, fetchZtPool, fetchSnapshots, quoteAgeSec, type DailyBar, type Snapshot } from "./quotes";
+import { fetchIndexDaily, fetchIndex, fetchTickTrades, fetchZtPool, fetchSnapshots, quoteAgeSec, type DailyBar, type Snapshot, type TickTrade } from "./quotes";
 import { riskBrake, type RiskBrake } from "./risk";
 import { bj, canTrade, hhmmOf, liveQuotes, phaseOf, type Phase, sessionNow, tradingElapsedMin } from "./session";
 import { Book, makeFill, round2, writeFileAtomic, type Fill } from "./state";
@@ -617,6 +617,17 @@ export class Engine {
     }
 
     // ---- 影子撮合 + 净值 ----
+    // 分笔成交（排队证据）：只拉挂着在途单的代码，每轮几个请求；拉不到的代码退回快照口径
+    const tapes = new Map<string, TickTrade[]>();
+    if (usable && config.paper) {
+      for (const code of new Set([...this.pending.values()].filter((o) => o.status === "pending").map((o) => o.code))) {
+        try {
+          tapes.set(code, await fetchTickTrades(code));
+        } catch {
+          /* 分笔失败不阻塞撮合：该代码退回快照口径 */
+        }
+      }
+    }
     // 当日单、隔日作废、本轮挂的不本轮成交 —— 具体口径在 orders.settlePending（有单测）
     const { fills, changed } = settlePending(this.pending, {
       snapshots: this.snapshots,
@@ -625,6 +636,7 @@ export class Engine {
       paper: config.paper,
       roundStartMs,
       dayOver: phase === "after-hours" || phase === "closed",
+      tapes,
     });
     for (const fill of fills) {
       // 平仓腿：先拿建仓时存下的两条止损线与观察水位算反事实对照，再落账

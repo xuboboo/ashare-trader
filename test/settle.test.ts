@@ -9,6 +9,7 @@ import {
   type SuggestedOrder,
 } from "../src/orders";
 import { Book, makeFill } from "../src/state";
+import type { TickTrade } from "../src/quotes";
 import { mkSnap } from "./helpers";
 
 /**
@@ -28,7 +29,7 @@ const scored = (over = {}) => scoreStock(featuresFromSnapshot(mkSnap(over), DAY1
 function settle(
   pending: Map<string, SuggestedOrder>,
   snapshots: Map<string, ReturnType<typeof mkSnap>>,
-  opts: Partial<{ clock: { date: string; time: string; minutes: number }; usable: boolean; roundStartMs: number; dayOver: boolean }> = {},
+  opts: Partial<{ clock: { date: string; time: string; minutes: number }; usable: boolean; roundStartMs: number; dayOver: boolean; tapes: Map<string, TickTrade[]> }> = {},
 ) {
   return settlePending(pending, {
     snapshots: snapshots as never,
@@ -37,6 +38,7 @@ function settle(
     paper: true,
     roundStartMs: opts.roundStartMs ?? Date.now() + 60_000, // 默认：本轮开始于挂单之后
     dayOver: opts.dayOver ?? false,
+    tapes: opts.tapes,
   });
 }
 
@@ -182,5 +184,85 @@ describe("影子撮合 settlePending", () => {
     const replay = new Book(100_000);
     replay.rebuild(fills);
     expect(replay.positions.get("600000")!.stopPrice).toBe(o.stopPrice!);
+  });
+});
+
+describe("排队撮合（分笔证据）", () => {
+  /** 挂出一张 300 股卖单（限价下沿 10.48），盘口已离开限价（买一 10.40）→ 只能被动排队 */
+  function restingSell(qty = 300) {
+    const book = heldBook();
+    const pos = book.positions.get("600000")!;
+    const snap = mkSnap({ price: 10.5, quoteDay: "20260921", bids: [{ p: 10.4, v: 100 }], asks: [{ p: 10.55, v: 100 }] });
+    const o = makeExitOrder(pos, snap, clock2, "跌破分时均线，弱势离场", qty)!;
+    const pending = new Map([[o.signalId, o]]);
+    return { o, pending, snap };
+  }
+  const tape = (rows: TickTrade[]): Map<string, TickTrade[]> => new Map([["600000", rows]]);
+
+  test("主动成交不受分笔影响：买一回到限价内就按对手价吃", () => {
+    const { o, pending } = restingSell();
+    // 买一 10.49 ≥ 限价下沿 10.48，量只有 1 手 → 按对手价吃 100 股，余量继续挂
+    const snap = mkSnap({ quoteDay: "20260921", bids: [{ p: 10.49, v: 1 }], asks: [{ p: 10.55, v: 100 }] });
+    const { fills } = settle(pending, new Map([["600000", snap]]), { tapes: tape([]) });
+    expect(fills).toHaveLength(1);
+    expect(fills[0]!.price).toBe(10.49);
+    expect(fills[0]!.qty).toBe(100);
+    void o;
+  });
+
+  test("被动成交：挂价上对手主动量 ≥ 余量 → 按挂价成交", () => {
+    const { o, pending, snap } = restingSell();
+    const tapes = tape([{ time: "09:35:03", price: 10.48, shares: 50_000, buyerAggressor: true }]);
+    const { fills } = settle(pending, new Map([["600000", snap]]), { tapes });
+    expect(fills).toHaveLength(1);
+    expect(fills[0]!.price).toBe(10.48); // 同价同价
+    expect(fills[0]!.qty).toBe(300);
+    expect(fills[0]!.note).toContain("排队成交");
+    void o;
+  });
+
+  test("方向不对不成交：挂价上是主动卖（砸买盘），卖单队列没被消耗", () => {
+    const { pending, snap } = restingSell();
+    const tapes = tape([{ time: "09:35:03", price: 10.48, shares: 50_000, buyerAggressor: false }]);
+    expect(settle(pending, new Map([["600000", snap]]), { tapes }).fills).toHaveLength(0);
+  });
+
+  test("挂单之前的成交量不算（队列在你挂单前就形成了）", () => {
+    const { pending, snap } = restingSell();
+    const tapes = tape([{ time: "09:34:59", price: 10.48, shares: 50_000, buyerAggressor: true }]);
+    expect(settle(pending, new Map([["600000", snap]]), { tapes }).fills).toHaveLength(0);
+  });
+
+  test("价位不同不成交：10.50 的成交轮不到挂在 10.48 的单", () => {
+    const { pending, snap } = restingSell();
+    const tapes = tape([{ time: "09:35:03", price: 10.5, shares: 50_000, buyerAggressor: true }]);
+    expect(settle(pending, new Map([["600000", snap]]), { tapes }).fills).toHaveLength(0);
+  });
+
+  test("量不够就部分成交，余量继续挂：50000 股里只有 200 股在我们价位主动成交", () => {
+    const { o, pending, snap } = restingSell(300);
+    const tapes = tape([{ time: "09:35:03", price: 10.48, shares: 200, buyerAggressor: true }]);
+    const { fills } = settle(pending, new Map([["600000", snap]]), { tapes });
+    expect(fills).toHaveLength(1);
+    expect(fills[0]!.qty).toBe(200);
+    expect(o.qty).toBe(100); // 余量
+    expect(o.filledQty).toBe(200);
+  });
+
+  test("无分笔数据：对手不在限价内就不成交（退回快照口径）", () => {
+    const { pending, snap } = restingSell();
+    expect(settle(pending, new Map([["600000", snap]]), { tapes: undefined }).fills).toHaveLength(0);
+  });
+
+  test("买单对称：挂价上主动卖（buyerAggressor=false）的量成交买单", () => {
+    const o = makeBuyOrder(scored(), clock1, undefined, 50_000)!; // priceRef 10.5 → limitHigh 10.52
+    const pending = new Map([[o.signalId, o]]);
+    // 卖一 10.53 > 10.52 → 不构成主动成交
+    const snap = mkSnap({ bids: [{ p: 10.49, v: 100 }], asks: [{ p: 10.53, v: 100 }] });
+    const tapes = tape([{ time: "14:45:03", price: 10.52, shares: 5_000, buyerAggressor: false }]);
+    const { fills } = settle(pending, new Map([["600000", snap]]), { clock: clock1, tapes });
+    expect(fills).toHaveLength(1);
+    expect(fills[0]!.price).toBe(10.52);
+    expect(fills[0]!.side).toBe("buy");
   });
 });

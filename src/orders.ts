@@ -6,7 +6,7 @@ import { config } from "./config";
 import { buyCosts, minCommissionWarn, sellCosts, slipFillPrice } from "./costs";
 import { stopLevel } from "./exit";
 import type { Scored } from "./factors";
-import type { Level, Snapshot } from "./quotes";
+import type { Level, Snapshot, TickTrade } from "./quotes";
 import { makeFill, round2, type Fill, type Position } from "./state";
 import { sharesForBudget, tickPrice, type Side } from "./symbols";
 
@@ -261,69 +261,145 @@ export function bookEating(levels: Level[], limit: number, buy: boolean): { shar
 }
 
 /**
- * 纸面撮合。我们的建议单是“对手价 ± 2 tick”的可成交限价单，所以不是排队等成交，
- * 而是下一轮就能看到价。保守在四处：
- *  1) 成交价用**下一轮观测到的对手价**（逐档加权），不是下单那一刻的参考价；
- *  2) 只用挂单之后观察到的极值（seenLow/seenHigh）判“能不能成交”；
- *  3) 成交价被可见盘口的量限制：深度不够就只成交一部分，不假设能吃下比盘口更多的量；
- *  4) 价格跑过限价时按限价钳住，不拿之后的好价占便宜。
+ * 纸面撮合 —— 两条路径，对应真实委托的两种命运：
+ *
+ *  1) **主动成交**：本轮快照里对手价还在限价内（卖单遇买一 ≥ 限价 / 买单遇卖一 ≤ 限价），
+ *     真实市场里这就是立即按对手价成交 —— 吃可见档位、逐档加权、深度不足部分成交。
+ *  2) **被动排队**：对手价已经离开，我们的单真实世界里在挂价队列里排队，只有挂价
+ *     这个价位上**对手主动方向**的真实成交量大到轮得到我们，才成交。证据源是分笔
+ *     成交（3 秒聚合的真实逐笔，fetchTickTrades）：挂价上对手主动量累计 ≥ 已成交量 +
+ *     本次数量（最后排队假设 —— 排在我们前面的量不超过该价位已成交的量），按挂价成交。
+ *     这解决了 L1 快照的两个盲区：价格瞬时冲过挂价又回来（快照拍不到）我们照样能
+ *     按真实成交证据成交；挂价上量被排在前面的单吃掉，我们不会凭空成交。
+ *
+ * 分笔拉不到时退回快照口径（没有被动成交机会 —— 对手不在限价内就不成交）。
+ * 整本盘口缺失（数据残缺）且无分笔时按 last±tick 兜底，受挂单后极值门保护。
  * 一字涨停买不进、一字跌停卖不出。
  */
-export function tryPaperFill(order: SuggestedOrder, snap: Snapshot, clock: Clock): Fill | null {
+export function tryPaperFill(order: SuggestedOrder, snap: Snapshot, clock: Clock, tape?: TickTrade[]): Fill | null {
   if (snap.suspended) return null;
   const buy = order.side === "buy";
   if (buy && snap.oneLineUp) return null;
   if (!buy && snap.oneLineDown) return null;
-  // 挂单之后的观察价有没有到过我们的限价
-  if (buy ? order.seenLow > order.limitHigh : order.seenHigh < order.limitLow) return null;
-  // 成交价用真实对手价：买吃卖一、卖打买一（last 只是"刚才别人成交在哪"）。
-  // 只有整本盘口缺失（数据残缺）才按 last±1tick 兜底，并且当时不知道深度。
   const hasBook = (snap.bids?.length ?? 0) > 0 && (snap.asks?.length ?? 0) > 0;
-  let px: number;
-  let qty = order.qty;
-  let availShares = 0;
-  let depthUnknown = false;
+
+  // ---- 主动成交：对手价在限价内，立即按对手价成交（限价卖 ≤ 买一 / 限价买 ≥ 卖一）----
   if (hasBook) {
     const eat = bookEating(buy ? snap.asks : snap.bids, buy ? order.limitHigh : order.limitLow, buy);
-    if (eat.vwap === null || eat.shares <= 0) return null; // 限价内没有对手量：本轮不成交
-    availShares = eat.shares;
-    // 向下取整到手：申报单位就是 100 股，不假设能拿到零股成交
-    qty = Math.min(order.qty, Math.floor(eat.shares / 100) * 100);
-    if (qty < 100) return null;
-    px = round2(eat.vwap); // 逐档加权已经被限价过滤，无需再钳（限价外的档根本没吃）
-  } else {
-    depthUnknown = true;
-    px = round2(buy ? Math.min(slipFillPrice(snap.price, order.side), order.limitHigh) : Math.max(slipFillPrice(snap.price, order.side), order.limitLow));
+    if (eat.vwap !== null && eat.shares > 0) {
+      // 向下取整到手：申报单位就是 100 股，不假设能拿到零股成交
+      const qty = Math.min(order.qty, Math.floor(eat.shares / 100) * 100);
+      if (qty >= 100) {
+        const px = round2(eat.vwap); // 逐档加权已经被限价过滤，无需再钳（限价外的档根本没吃）
+        return makeFill({
+          code: order.code,
+          name: order.name,
+          side: order.side,
+          price: px,
+          qty,
+          date: clock.date,
+          time: clock.time,
+          kind: "paper",
+          signalId: order.signalId,
+          // 建议单算好的两条止损线（fixed 与 ATR）必须跟着成交走，否则 Book 只能拿默认百分比反推，
+          // 而且“哪种止损更好”这个对照永远做不了
+          stopPrice: order.stopPrice ?? undefined,
+          stopFixed: order.stopFixed,
+          stopAtr: order.stopAtr,
+          slippageBps: order.priceRef > 0 ? ((px - order.priceRef) / order.priceRef) * 10_000 : 0,
+          spreadBps: spreadBpsOf(snap),
+          note:
+            qty < order.qty
+              ? `部分成交 ${qty}/${order.qty} 股：限价内可见盘口只有 ${eat.shares} 股，余量继续挂着`
+              : undefined,
+        });
+      }
+    }
   }
-  // 成交瞬间的盘口价差：事后审计"影子成交价够不够真实"的原始证据
+
+  // ---- 被动排队：挂价上对手主动成交的分笔证据 ----
+  const level = buy ? order.limitHigh : order.limitLow;
+  const tapeQty = tapeQualifiedQty(order, tape, buy, level);
+  if (tapeQty >= 100) {
+    return makeFill({
+      code: order.code,
+      name: order.name,
+      side: order.side,
+      price: level,
+      qty: tapeQty,
+      date: clock.date,
+      time: clock.time,
+      kind: "paper",
+      signalId: order.signalId,
+      stopPrice: order.stopPrice ?? undefined,
+      stopFixed: order.stopFixed,
+      stopAtr: order.stopAtr,
+      slippageBps: order.priceRef > 0 ? ((level - order.priceRef) / order.priceRef) * 10_000 : 0,
+      spreadBps: spreadBpsOf(snap),
+      note: `排队成交 ${tapeQty} 股 @ ${level}：挂价上对手主动成交 ${tapeVolume(order, tape, buy, level)} 股（最后排队假设），余量继续挂着`,
+    });
+  }
+
+  // ---- 兜底：整本盘口缺失且无分笔，按 last±tick 成交（未校深度，受极值门保护）----
+  if (!hasBook && !tape?.length) {
+    if (buy ? order.seenLow > order.limitHigh : order.seenHigh < order.limitLow) return null;
+    const px = round2(buy ? Math.min(slipFillPrice(snap.price, order.side), order.limitHigh) : Math.max(slipFillPrice(snap.price, order.side), order.limitLow));
+    return makeFill({
+      code: order.code,
+      name: order.name,
+      side: order.side,
+      price: px,
+      qty: order.qty,
+      date: clock.date,
+      time: clock.time,
+      kind: "paper",
+      signalId: order.signalId,
+      stopPrice: order.stopPrice ?? undefined,
+      stopFixed: order.stopFixed,
+      stopAtr: order.stopAtr,
+      slippageBps: order.priceRef > 0 ? ((px - order.priceRef) / order.priceRef) * 10_000 : 0,
+      note: "盘口缺失：按 last±tick 兜底成交（未校盘口深度）",
+    });
+  }
+  return null;
+}
+
+/** 成交瞬间的盘口价差：事后审计"影子成交价够不够真实"的原始证据 */
+function spreadBpsOf(snap: Snapshot): number | undefined {
   const b1 = snap.bids?.[0]?.p ?? 0;
   const a1 = snap.asks?.[0]?.p ?? 0;
   const mid = (a1 + b1) / 2;
-  const spreadBps = b1 > 0 && a1 > 0 && mid > 0 ? ((a1 - b1) / mid) * 10_000 : undefined;
-  const partial = qty < order.qty;
-  return makeFill({
-    code: order.code,
-    name: order.name,
-    side: order.side,
-    price: px,
-    qty,
-    date: clock.date,
-    time: clock.time,
-    kind: "paper",
-    signalId: order.signalId,
-    // 建议单算好的两条止损线（fixed 与 ATR）必须跟着成交走，否则 Book 只能拿默认百分比反推，
-    // 而且“哪种止损更好”这个对照永远做不了
-    stopPrice: order.stopPrice ?? undefined,
-    stopFixed: order.stopFixed,
-    stopAtr: order.stopAtr,
-    slippageBps: order.priceRef > 0 ? ((px - order.priceRef) / order.priceRef) * 10_000 : 0,
-    spreadBps,
-    note: partial
-      ? `部分成交 ${qty}/${order.qty} 股：限价内可见盘口只有 ${availShares} 股，余量继续挂着`
-      : depthUnknown
-        ? "盘口缺失：按 last±tick 兜底成交（未校盘口深度）"
-        : undefined,
-  });
+  return b1 > 0 && a1 > 0 && mid > 0 ? ((a1 - b1) / mid) * 10_000 : undefined;
+}
+
+/**
+ * 挂价上对手主动方向的累计成交量（自挂单时刻起）。
+ * 卖单等**主动买**（买方吃进卖队），买单等**主动卖**（卖方砸向买队）——
+ * 同价位上自己方向的主动量不消耗我们面对的队列。
+ */
+export function tapeVolume(order: SuggestedOrder, tape: TickTrade[] | undefined, buy: boolean, level: number): number {
+  if (!tape?.length) return 0;
+  const since = `${order.time}:00`;
+  let vol = 0;
+  for (const t of tape) {
+    // 被动成交价就是挂价本身：同价同价（A 股同价位同价成交），价不同量再大也轮不到我们
+    if (t.price !== level || t.time < since) continue;
+    if (t.buyerAggressor === buy) continue; // 卖单(buy=false)要主动买(true)；买单要主动卖(false)
+    vol += t.shares;
+  }
+  return vol;
+}
+
+/**
+ * 排队假设下本轮能成交多少股：挂价上对手主动量 − 已成交量（含主动成交部分，
+ * 它们消耗的是同一份市场流动性），向下取整到手，且不超过余量。
+ */
+export function tapeQualifiedQty(order: SuggestedOrder, tape: TickTrade[] | undefined, buy: boolean, level: number): number {
+  if (!tape?.length) return 0;
+  const vol = tapeVolume(order, tape, buy, level);
+  const already = order.filledQty ?? 0;
+  const fillable = Math.min(order.qty, Math.max(0, vol - already));
+  return Math.floor(fillable / 100) * 100;
 }
 
 /** 一张单占住的坑：同一标的同一方向同时只允许一张在途单（否则每 60s 一轮会重复堆单）。 */
@@ -354,6 +430,8 @@ export function settlePending(
     paper: boolean;
     roundStartMs: number;
     dayOver: boolean;
+    /** 分笔成交（按代码）：被动排队的成交证据。缺该代码 = 退回快照口径（无被动成交）。 */
+    tapes?: Map<string, TickTrade[]>;
   },
 ): { fills: Fill[]; changed: boolean } {
   const todayCompact = args.clock.date.replace(/-/g, "");
@@ -371,7 +449,7 @@ export function settlePending(
     if (!sn || sn.quoteDay !== todayCompact) continue;
     if (order.restingSince >= args.roundStartMs) continue; // 本轮刚挂出去：下一轮才可能成交
     updateResting(order, sn);
-    const fill = args.paper ? tryPaperFill(order, sn, args.clock) : null;
+    const fill = args.paper ? tryPaperFill(order, sn, args.clock, args.tapes?.get(order.code)) : null;
     if (!fill) continue;
     fills.push(fill);
     changed = true;

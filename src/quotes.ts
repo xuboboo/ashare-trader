@@ -164,6 +164,41 @@ export async function fetchSnapshot(code: string): Promise<Snapshot | null> {
   return m.get(code) ?? null;
 }
 
+/**
+ * 分笔成交（3 秒聚合的真实成交记录，东财 details 接口）。
+ * 这是排队模拟的证据源：挂单价这个价位上真实成交了多少量、哪个方向主动，直接可读 ——
+ * L1 快照给不了这个（它只说"现在簿子上挂着什么"，不说"刚才什么价成交了多少"）。
+ * f55 实测与价格变动强相关：上涨窗口 type2 占 67/70 → **2 = 主动买，1 = 主动卖**。
+ * 只对挂着在途单的代码调用（每轮几个请求），别刷全池 —— 限频是全进程共享的。
+ */
+export interface TickTrade {
+  /** HH:MM:SS */
+  time: string;
+  price: number;
+  /** 股（接口单位是手，×100） */
+  shares: number;
+  /** true = 主动买（买方吃卖方） */
+  buyerAggressor: boolean;
+}
+
+/** 最近 pos 条分笔成交（按时间升序）。-1500 ≈ 覆盖挂单后 75 分钟的成交。 */
+export async function fetchTickTrades(code: string, pos = -1500): Promise<TickTrade[]> {
+  const url =
+    `https://push2.eastmoney.com/api/qt/stock/details/get?secid=${eastmoneySecid(code)}` +
+    `&fields1=f1,f2,f3,f4&fields2=f51,f52,f53,f54,f55&pos=${pos}`;
+  const j = await httpJson<{ data?: { details?: string[] } }>(url, { referer: "https://quote.eastmoney.com/" });
+  const rows = j.data?.details ?? [];
+  const out: TickTrade[] = [];
+  for (const r of rows) {
+    const p = r.split(",");
+    const price = Number(p[1]);
+    const hands = Number(p[2]);
+    if (!(price > 0) || !(hands > 0) || !p[0]) continue;
+    out.push({ time: p[0]!, price, shares: hands * 100, buyerAggressor: p[4] === "2" });
+  }
+  return out;
+}
+
 /** 上证指数：大盘闸门用。symbol 与平安银行撞码，必须带 sh 前缀走这里。 */
 export async function fetchIndex(): Promise<{ price: number; pct: number; amountYi: number; snapshot: Snapshot }> {
   const text = await httpGet("https://qt.gtimg.cn/q=sh000001", { referer: "https://gu.qq.com/" });
