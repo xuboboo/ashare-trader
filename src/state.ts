@@ -27,6 +27,10 @@ export interface Fill {
   signalId?: string;
   /** 卖出时才有：这一笔实现的盈亏（元，已扣双边费用） */
   realizedPnl?: number;
+  /** 卖出时才有：成交那一刻的成本价（Position.avgPrice 快照），盈亏比例的分母口径 */
+  costAvg?: number;
+  /** 卖出时才有：实现盈亏 / 成本市值 ×100（A 股 App 的"盈亏比例"口径，已扣费） */
+  realizedPnlPct?: number;
   /**
    * 买入时：这张单当初算好的止损触发线（fixed 或 ATR 口径）。
    * 成交记录里必须带着它，否则持仓只能拿默认百分比反推 ——
@@ -335,6 +339,8 @@ export class Book {
     if (p && sold > 0) {
       const allocBuyFee = round2((p.feesPaid * sold) / qtyBefore);
       realized = round2((fill.price - p.avgPrice) * sold - fillFeeShare - allocBuyFee);
+      fill.costAvg = round2(p.avgPrice);
+      fill.realizedPnlPct = round2((realized / (p.avgPrice * sold)) * 100);
       p.qty -= sold;
       p.sellable = Math.max(0, p.sellable - sold);
       p.feesPaid = round2(p.feesPaid - allocBuyFee);

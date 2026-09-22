@@ -35,6 +35,10 @@ export interface Fill {
   kind: "paper" | "manual";
   signalId?: string;
   realizedPnl?: number;
+  /** 卖出成交那一刻的成本价快照（盈亏比例的分母口径） */
+  costAvg?: number;
+  /** 实现盈亏 / 成本市值 ×100（A 股 App 的"盈亏比例"口径，已扣费） */
+  realizedPnlPct?: number;
   slippageBps?: number;
   note?: string;
 }

@@ -84,6 +84,30 @@ describe("死单改价 cancelStaleSells", () => {
   });
 });
 
+describe("Jev 定价的卖出单 makeExitOrder(priceHint)", () => {
+  test("hint 高于市价：限价带以 hint 为中心挂出（等更好的价）", () => {
+    // 现价 10.2，Jev 定价 +1% ≈ 10.30
+    const o = makeExitOrder(heldPos(), mkSnap({ price: 10.2, prevClose: 10 }), clock, "Jev 卖出辅助", 100, 0, 10.3)!;
+    expect(o.priceRef).toBe(10.3);
+    expect(o.limitLow).toBe(10.28);
+    expect(o.limitHigh).toBe(10.32);
+  });
+  test("hint 低于市价：钳到市价（低于市价的卖单等于市价离场）", () => {
+    const o = makeExitOrder(heldPos(), mkSnap({ price: 10.2, prevClose: 10 }), clock, "Jev 卖出辅助", 100, 0, 9.9)!;
+    expect(o.priceRef).toBe(10.2);
+  });
+  test("hint 超过涨停：钳到涨停", () => {
+    const o = makeExitOrder(heldPos(), mkSnap({ price: 10.2, prevClose: 10 }), clock, "Jev 卖出辅助", 100, 0, 12)!;
+    expect(o.priceRef).toBe(mkSnap({ prevClose: 10 }).limitUp);
+  });
+  test("硬规则卖出不传 hint：维持触发瞬间市价带", () => {
+    const o = makeExitOrder(heldPos(), mkSnap({ price: 10.2, prevClose: 10 }), clock, "跌破止损", 100)!;
+    expect(o.priceRef).toBe(10.2);
+    expect(o.limitLow).toBe(10.18);
+    expect(o.limitHigh).toBe(10.22);
+  });
+});
+
 describe("账本硬规则：T+1 与不可超卖", () => {
   test("卖出超过持仓：只有持有的部分进现金，note 写明", () => {
     const book = new Book(10_000);
@@ -116,5 +140,24 @@ describe("账本硬规则：T+1 与不可超卖", () => {
     expect(book.cash).toBeLessThan(cashBeforeSell + 300 * 11);
     expect(book.positions.size).toBe(0);
     expect(book.fills.at(-1)!.note).toContain("100/300");
+  });
+});
+
+describe("成交流水带盈亏口径", () => {
+  test("卖出成交记录成本价与盈亏比例（A 股 App 口径，已扣费）", () => {
+    const book = new Book(10_000);
+    book.rollover(DAY1);
+    book.applyFill(
+      makeFill({ code: "600000", name: "测试股份", side: "buy", price: 10, qty: 200, date: DAY1, time: "09:30", kind: "paper" }),
+    );
+    book.rollover("2026-09-22");
+    book.applyFill(
+      makeFill({ code: "600000", name: "测试股份", side: "sell", price: 11, qty: 200, date: "2026-09-22", time: "09:40", kind: "paper" }),
+    );
+    const f = book.fills.at(-1)!;
+    expect(f.costAvg).toBe(10);
+    expect(f.realizedPnl).toBeDefined();
+    // 盈亏比例 = 已实现盈亏 / (成本价 × 数量)
+    expect(f.realizedPnlPct).toBeCloseTo((f.realizedPnl! / 2000) * 100, 2);
   });
 });

@@ -123,7 +123,10 @@ export function makeBuyOrder(
   };
 }
 
-/** 卖出建议单（止损 / 次日清仓 / 高开减仓）。qty 受 T+1 可卖数量限制。 */
+/** 卖出建议单（止损 / 次日清仓 / 高开减仓 / 模型提前离场）。qty 受 T+1 可卖数量限制。
+ *  priceHint = 模型（Jev）定的卖出限价：钳在 [现价, 涨停] 之间（模型要求挂高价等待，
+ *  但不允许荒谬值，也不会低于市价 —— 那等于市价离场）；缺省用触发瞬间市价。
+ *  硬规则卖出（止损/到点/弱势）不传 hint：它们是保护性离场，按市价走，不等价格。 */
 export function makeExitOrder(
   pos: Position,
   snap: Snapshot,
@@ -131,13 +134,15 @@ export function makeExitOrder(
   reason: string,
   qtyWanted: number,
   score = 0,
+  priceHint?: number | null,
 ): SuggestedOrder | null {
   const qty = Math.min(qtyWanted, pos.sellable);
   if (qty < 100 || snap.price <= 0) {
     if (pos.frozen > 0 && pos.sellable <= 0) return null; // 今日买入，T+1 卖不掉
     return null;
   }
-  const priceRef = snap.price;
+  const hintOk = priceHint != null && Number.isFinite(priceHint) && priceHint > 0;
+  const priceRef = hintOk ? round2(Math.min(Math.max(priceHint, snap.price), snap.limitUp)) : snap.price;
   const amountCny = round2(priceRef * qty);
   const costCny = sellCosts(amountCny).total;
   return {

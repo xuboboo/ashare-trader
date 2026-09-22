@@ -17,7 +17,7 @@ import { defaultFactorParams, featuresFromSnapshot, gateLabel, ma5CloseBefore, m
 import { FactorModel, type Decision, type DailyBias, type Model, type SignalState, LlmAdvisory } from "./model";
 import { JevModel } from "./jev";
 import { LocalModel } from "./local";
-import { SellAdvisor, type SellAssistInput } from "./sell-assist";
+import { SellAdvisor, type SellAdvice, type SellAssistInput } from "./sell-assist";
 import { cancelStaleSells, makeBuyOrder, makeExitOrder, restingKey, restingKeys, settlePending, type Clock, type SuggestedOrder } from "./orders";
 import { fetchIndexDaily, fetchIndex, fetchZtPool, fetchSnapshots, quoteAgeSec, type DailyBar, type Snapshot } from "./quotes";
 import { riskBrake, type RiskBrake } from "./risk";
@@ -446,6 +446,7 @@ export class Engine {
               };
             });
             const advices = await this.sellAdvisor.advise(inputs);
+            void this.persistSellAdvice(clock, advices, "extend-eval");
             for (const a of advices) {
               if (a.pExitBetter === null || !Number.isFinite(a.pExitBetter)) continue;
               const pos = this.book.positions.get(a.code);
@@ -454,8 +455,17 @@ export class Engine {
               if (a.suggestExit) {
                 // 同标的已有在途卖单（含尚未撤净的死单）就不叠加：两张卖单同时成交会超卖
                 if ([...this.pending.values()].some((o) => o.side === "sell" && o.code === a.code)) continue;
-                // Jev 决定离场：生成退出单
-                const o = makeExitOrder(pos, sn, clock, `Jev 卖出决策（p=${(a.pExitBetter * 100).toFixed(0)}%）：确认弱势提前离场`, pos.sellable);
+                // Jev 决定离场：生成退出单，限价用 Jev 的定价（未给出则按市价）
+                const hint = hintOf(a, sn);
+                const o = makeExitOrder(
+                  pos,
+                  sn,
+                  clock,
+                  `Jev 卖出决策（p=${(a.pExitBetter * 100).toFixed(0)}%）：确认弱势提前离场${hintLabel(hint, a, sn)}`,
+                  pos.sellable,
+                  0,
+                  hint,
+                );
                 if (o) {
                   newOrders.push(o);
                   this.pending.set(o.signalId, o);
@@ -501,6 +511,7 @@ export class Engine {
               };
             });
             const advices = await this.sellAdvisor.advise(inputs);
+            void this.persistSellAdvice(clock, advices, "sell-assist");
             // 去重：硬规则本轮的 + 历史轮次 pending 中的，都不重复出
             const hasSellOrder = new Set(newOrders.filter((o) => o.side === "sell").map((o) => o.code));
             for (const o of this.pending.values()) {
@@ -512,7 +523,18 @@ export class Engine {
               const pos = this.book.positions.get(a.code);
               const sn = this.snapshots.get(a.code);
               if (!pos || !sn) continue;
-              const o = makeExitOrder(pos, sn, clock, `Jev 卖出辅助（p=${(a.pExitBetter * 100).toFixed(0)}%）：确认弱势提前离场`, pos.sellable);
+              // 限价用 Jev 的定价：0% = 市价对手价离场，>0% = 挂高等更好的价；
+              // 挂高后若市价 2 轮未到限价下沿，死单改价机制会撤掉，下一决策轮 Jev 重新定价
+              const hint = hintOf(a, sn);
+              const o = makeExitOrder(
+                pos,
+                sn,
+                clock,
+                `Jev 卖出辅助（p=${(a.pExitBetter * 100).toFixed(0)}%）：确认弱势提前离场${hintLabel(hint, a, sn)}`,
+                pos.sellable,
+                0,
+                hint,
+              );
               if (o) {
                 newOrders.push(o);
                 this.pending.set(o.signalId, o);
@@ -726,6 +748,43 @@ export class Engine {
     const file = join(dir, `${clock.date}.jsonl`);
     const prev = (await Bun.file(file).exists()) ? await Bun.file(file).text() : "";
     await writeFileAtomic(file, prev + JSON.stringify(row) + "\n");
+  }
+
+  /**
+   * Jev 卖出评估落盘：概率、定价意图、当时市价与折算限价逐次追加到
+   * data/shadow/<日期>-sell-assist.jsonl —— 没有这份记录，"Jev 定的卖价好不好"
+   * 两周后无法用真实结果回答。失败静默：落盘不影响主链路。
+   */
+  private async persistSellAdvice(clock: EngineClock, advices: SellAdvice[], kind: "extend-eval" | "sell-assist"): Promise<void> {
+    if (!advices.length) return;
+    try {
+      const dir = join(config.dataDir, "shadow");
+      await mkdir(dir, { recursive: true });
+      const file = join(dir, `${clock.date}-sell-assist.jsonl`);
+      const rows = advices.map((a) => {
+        const sn = this.snapshots.get(a.code);
+        const price = sn?.price ?? 0;
+        const hint =
+          a.priceOffsetPct != null && Number.isFinite(a.priceOffsetPct) && price > 0
+            ? round2(price * (1 + Math.max(0, a.priceOffsetPct) / 100))
+            : null;
+        return {
+          ts: Date.now(),
+          time: clock.time,
+          kind,
+          code: a.code,
+          p: a.pExitBetter,
+          suggestExit: a.suggestExit,
+          priceOffsetPct: a.priceOffsetPct ?? null,
+          price,
+          hint,
+        };
+      });
+      const prev = (await Bun.file(file).exists()) ? await Bun.file(file).text() : "";
+      await writeFileAtomic(file, prev + rows.map((r) => JSON.stringify(r)).join("\n") + "\n");
+    } catch {
+      /* 落盘失败不影响主流程 */
+    }
   }
 
   /**
@@ -1094,6 +1153,16 @@ export class Engine {
     return `${Math.round(ms)}ms`;
   }
 }
+
+/** Jev 定价（限价相对现价的加价 %）→ 卖出限价 hint（元）。负值/缺失按市价处理（返回 null）。 */
+const hintOf = (a: SellAdvice, sn: { price: number }): number | null => {
+  if (a.priceOffsetPct == null || !Number.isFinite(a.priceOffsetPct) || !(sn.price > 0)) return null;
+  return round2(sn.price * (1 + Math.max(0, a.priceOffsetPct) / 100));
+};
+
+/** 依据行里说清楚这张卖出单的价是谁定的：Jev 挂高多少，还是市价离场。 */
+const hintLabel = (hint: number | null, a: SellAdvice, sn: { price: number }): string =>
+  hint != null && hint > sn.price ? `，限价 ${hint.toFixed(2)}（Jev 定价 +${(a.priceOffsetPct ?? 0).toFixed(1)}%）` : "，市价离场";
 
 function triggerOf(phase: Phase, minutes: number): string {
   if (phase === "pre-open") return minutes >= config.session.premarketMin ? "盘前预选" : "盘前等待";

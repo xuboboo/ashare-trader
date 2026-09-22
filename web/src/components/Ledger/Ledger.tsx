@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { fmtCny, fmtInt, fmtPrice } from "@/lib/format";
+import { fmtCny, fmtInt, fmtPct, fmtPrice } from "@/lib/format";
 import { API_TOKEN, API_URL } from "@/lib/useFeed";
 import type { Fill, Totals } from "@/lib/types";
 
@@ -104,6 +104,7 @@ export default function Ledger({ fillCount, onError }: { fillCount: number; onEr
             <th>成交价</th>
             <th>金额</th>
             <th>费用</th>
+            <th>盈亏</th>
             <th>来源</th>
             <th>备注</th>
             <th />
@@ -112,7 +113,7 @@ export default function Ledger({ fillCount, onError }: { fillCount: number; onEr
         <tbody>
           {fills.length === 0 ? (
             <tr className="empty">
-              <td colSpan={11}>没有成交。回填一笔真实成交，或等影子撮合。</td>
+              <td colSpan={12}>没有成交。回填一笔真实成交，或等影子撮合。</td>
             </tr>
           ) : (
             fills
@@ -130,11 +131,13 @@ export default function Ledger({ fillCount, onError }: { fillCount: number; onEr
                   <td>{fmtPrice(f.price)}</td>
                   <td>{fmtCny(f.amount)}</td>
                   <td>{fmtCny(f.costs.total, 2)}</td>
-                  <td className="txt muted">{f.kind === "manual" ? "人工回填" : "影子"}</td>
-                  <td className="why">
-                    {f.note ?? ""}
-                    {f.realizedPnl !== undefined ? ` 实现 ${fmtCny(f.realizedPnl)}` : ""}
+                  <td className={f.realizedPnl !== undefined ? (f.realizedPnl >= 0 ? "up" : "down") : "muted"}>
+                    {f.realizedPnl !== undefined
+                      ? `${fmtCny(f.realizedPnl)}${f.realizedPnlPct !== undefined ? ` ${fmtPct(f.realizedPnlPct, 2)}` : ""}`
+                      : "—"}
                   </td>
+                  <td className="txt muted">{f.kind === "manual" ? "人工回填" : "影子"}</td>
+                  <td className="why">{f.note ?? ""}</td>
                   <td>
                     <button className="btn" onClick={() => void remove(f)} disabled={busy}>
                       撤销
