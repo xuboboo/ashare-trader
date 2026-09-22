@@ -66,6 +66,12 @@ export interface TickEvent {
   fills: Fill[];
   positions: PositionView[];
   totals: ReturnType<Book["totals"]>;
+  /**
+   * 本轮墙钟分解（毫秒）。加它是因为"10s 节奏"实测是 16s，而光看轮次间隔定不了责任：
+   * 主循环是 `sleep(pollMs - elapsed)`，一轮跑 13s 就意味着周期被轮次本身撑开，
+   * 与 DECIDE_EVERY_MS 无关。不归因清楚，改节流参数就是盲改。
+   */
+  timing?: { roundMs: number; quotesMs: number; tapesMs: number; modelMs: number };
   note?: string;
 }
 
@@ -145,6 +151,10 @@ export class Engine {
         `闸门${gateLabel(e.gate)} 池${e.universe} 快照${e.quotes.ok} ` +
         `出单${e.orders.length} 成交${e.fills.length} 持仓${e.totals.positions} 浮亏盈${pnl} ${e.trigger}` +
         (picks !== "-" ? ` | ${picks}` : "") +
+        // 轮次拉长时先看这三个数：是行情、是分笔，还是模型
+        (e.timing && e.decision && !e.decision.late
+          ? ` | 拆: 行情${e.timing.quotesMs} 分笔${e.timing.tapesMs} 模型${e.timing.modelMs}`
+          : "") +
         (e.note ? ` | ${e.note}` : ""),
     );
   }
@@ -388,6 +398,8 @@ export class Engine {
     // eodOnly 是实时链路降级开关，降级期间只能观察/复盘，不能把旧快照
     // 当成可下单行情。显式 fail-closed，避免故障后的短窗口继续注册新单。
     const usable = trading && !this.eodOnly && canTrade(phase) && ok > 0 && quotesFresh;
+    /** 行情段（指数快照 + 全池 L1）的累计耗时 —— t0 是行情块开头 */
+    const quotesMs = Math.round(performance.now() - t0);
 
     // ---- 大盘闸门 ----
     this.indexMa5 = this.indexBars.length >= 5 ? (ma5CloseBefore(this.indexBars, clock.date) ?? null) : this.indexMa5;
@@ -466,7 +478,7 @@ export class Engine {
         }
         // ---- 硬安全边界：止损与 T+1。Jev 自主决定其余卖出。----
         const exits = this.exitOrders(clock);
-        for (const o of exits) o.decidedBy = "hard-rule"; // 止损/高开减仓是保护性硬规则，不经模型
+        for (const o of exits) o.decidedBy = "hard-rule"; // 止损是保护性硬规则，不经模型（Jev 模式下高开减仓已交还 Jev）
         newOrders.push(...exits);
         for (const o of exits) this.pending.set(o.signalId, o);
         if (exits.length) await this.persistPending();
@@ -626,6 +638,7 @@ export class Engine {
     const matching = usable && liveQuotes(phase);
     // 分笔成交（排队证据）：只拉挂着在途单的代码，每轮几个请求；拉不到的代码退回快照口径
     const tapes = new Map<string, TickTrade[]>();
+    const tapesT0 = performance.now();
     if (matching && config.paper) {
       for (const code of new Set([...this.pending.values()].filter((o) => o.status === "pending").map((o) => o.code))) {
         try {
@@ -635,6 +648,8 @@ export class Engine {
         }
       }
     }
+    /** 分笔是逐代码串行拉的，有在途单时这一段很容易吃掉整个轮次预算 —— 单独计时看着它。 */
+    const tapesMs = Math.round(performance.now() - tapesT0);
     // 当日单、隔日作废、本轮挂的不本轮成交 —— 具体口径在 orders.settlePending（有单测）
     const { fills, changed } = settlePending(this.pending, {
       snapshots: this.snapshots,
@@ -656,6 +671,7 @@ export class Engine {
     this.book.markToMarket(new Map([...this.snapshots].map(([c, s]) => [c, s.price])));
     if (usable) this.trackWaters(clock);
 
+    const roundMs = Math.round(performance.now() - t0);
     const event: TickEvent = {
       seq: ++this.seq,
       ts: Date.now(),
@@ -696,7 +712,13 @@ export class Engine {
       fills,
       positions: this.positionView(),
       totals: this.book.totals(),
-      note: this.note(trading, phase, ok, performance.now() - t0, ageSec, quotesFresh, this.zt.known),
+      timing: {
+        roundMs,
+        quotesMs,
+        tapesMs,
+        modelMs: Math.round((decision?.latencyMs ?? 0) + (sellDecision?.latencyMs ?? 0)),
+      },
+      note: this.note(trading, phase, ok, roundMs, ageSec, quotesFresh, this.zt.known),
     };
     this.attach(event);
     return event;
