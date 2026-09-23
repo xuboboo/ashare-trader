@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { config } from "../src/config";
-import { buyDecisionDue } from "../src/engine";
+import { buyDecisionDue, premarketFullPool } from "../src/engine";
 
 /**
  * 全程决策调度：盘前每日一次预选，连续竞价全程按节奏，其余时段不跑。
@@ -73,6 +73,14 @@ describe("买入决策调度（盘前预选 + 全程节奏）", () => {
     expect(buyDecisionDue(late)).toBe(true); // 前提：新鲜时确实会跑
     expect(buyDecisionDue({ ...late, usable: false })).toBe(false); // 行情不新鲜
     expect(buyDecisionDue({ ...late, liveNow: false })).toBe(false); // 不在连续竞价
+  });
+
+  test("盘前窗口需要全池行情（09:29 那次预选只看 60 支旧缓存，eligible 恒为空）", () => {
+    expect(premarketFullPool(565)).toBe(true); // 09:25 竞价定型
+    expect(premarketFullPool(569)).toBe(true); // 09:29
+    expect(premarketFullPool(564)).toBe(false); // 09:24 竞价未定型
+    expect(premarketFullPool(570)).toBe(false); // 09:30 已开盘，连续竞价分支全量拉
+    expect(premarketFullPool(700)).toBe(false); // 午休
   });
 
   test("force 无视一切节奏（手动 /scan 随时可看一轮决策）", () => {

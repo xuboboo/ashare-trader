@@ -379,8 +379,17 @@ export class Engine {
           /* 探测失败：继续降级，下个周期再试 */
         }
       }
-      // 非连续竞价时段：只拉池内前 60 支（一次请求），让仪表盘与盘前复盘有东西看，不白耗额度
-      if (!this.snapshots.size && codes.length) {
+      // 盘前窗口（集合竞价 09:25 定型后）：昨夜缓存的价格已无意义，且预选观点必须覆盖
+      // 真实候选池 —— 只拉 60 支会让 eligible 恒为空，盘前预选退化成永远"硬规则短路"
+      //（2026-09-23 09:29 实测踩中）。
+      if (premarketFullPool(clock.minutes) && codes.length) {
+        try {
+          this.snapshots = await fetchSnapshots(codes);
+        } catch {
+          /* 竞价时段拉不到就沿用旧快照，下个轮次再试 */
+        }
+      } else if (!this.snapshots.size && codes.length) {
+        // 非连续竞价时段：只拉池内前 60 支（一次请求），让仪表盘与盘前复盘有东西看，不白耗额度
         try {
           this.snapshots = await fetchSnapshots(codes.slice(0, 60));
         } catch {
@@ -1237,8 +1246,7 @@ export function buyDecisionDue(a: {
   if (a.force) return true;
   if (!a.trading) return false;
   // 盘前预选窗口：集合竞价 09:25 定型后到开盘前（此时开盘价已确定，竞价信息真实可得）
-  const preMarket = a.minutes >= config.session.callAuctionEnd && a.minutes < config.session.morningStart;
-  if (preMarket) return !a.preBuyDone;
+  if (premarketFullPool(a.minutes)) return !a.preBuyDone;
   // 开盘稳定期：连续竞价开始后的前 OPEN_DELAY_MIN 分钟不开新仓（退出管理照常）
   if (a.minutes < config.session.morningStart + config.openDelayMin) return false;
   // 事件触发：可买候选集一变化就在 15 秒内响应（"看情况冲"），15s 下限防 API 哄抢。
@@ -1251,6 +1259,15 @@ export function buyDecisionDue(a: {
 /** 两笔新仓之间是否已过最短间隔。抽成纯函数便于单测（防“同一分钟无脑冲多只”）。 */
 export function canOpenNewPosition(nowMs: number, lastOpenMs: number, gapMs: number): boolean {
   return nowMs - lastOpenMs >= gapMs;
+}
+
+/**
+ * 盘前窗口（集合竞价 09:25 定型后到 09:30 开盘前）：当天第一次观点的窗口。
+ * 调度（preMarket 分支）与行情（这段要拉全池，只拉 60 支会让预选恒为空）
+ * 共用同一份窗口定义，避免两处各写一套漂移。
+ */
+export function premarketFullPool(minutes: number): boolean {
+  return minutes >= config.session.callAuctionEnd && minutes < config.session.morningStart;
 }
 
 /** 影子对照里单个模型的判断结果（只留可比字段，理由/延迟这类不进流水）。 */
