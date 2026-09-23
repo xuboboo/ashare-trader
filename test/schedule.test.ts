@@ -38,10 +38,18 @@ describe("买入决策调度（盘前预选 + 全程节奏）", () => {
     expect(buyDecisionDue({ ...base, minutes: 545, liveNow: false })).toBe(false); // 09:05 竞价未定型，无活价
   });
 
-  test("开盘稳定期：09:30-09:45 不出新买入单（09:38 那种开盘脉冲单不再出现）", () => {
-    expect(buyDecisionDue({ ...base, minutes: 571 })).toBe(false); // 09:31 稳定期内
-    expect(buyDecisionDue({ ...base, minutes: 584 })).toBe(false); // 09:44 仍在稳定期
-    expect(buyDecisionDue({ ...base, minutes: 586 })).toBe(true); // 09:46 起恢复按节奏决策
+  test("开盘稳定期：窗口内不出新买入单，窗口外恢复（随 OPEN_DELAY_MIN 可变）", () => {
+    const delay = config.openDelayMin;
+    if (delay > 0) {
+      // 设了稳定期：09:31（开盘后 1 分钟）在窗口内 → 不出买入单
+      expect(buyDecisionDue({ ...base, minutes: 571 })).toBe(false);
+      expect(buyDecisionDue({ ...base, minutes: 570 + delay - 1 })).toBe(false);
+    } else {
+      // 稳定期=0（2026-09-23 用户拍板）：09:31 开盘即可按节奏决策
+      expect(buyDecisionDue({ ...base, minutes: 571 })).toBe(true);
+    }
+    // 稳定期结束的那一分钟起，一定恢复决策
+    expect(buyDecisionDue({ ...base, minutes: 570 + delay + 1 })).toBe(true);
   });
 
   test("集合竞价/午休/收盘竞价不跑买入（价格不可靠）", () => {
