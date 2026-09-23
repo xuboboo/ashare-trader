@@ -163,6 +163,8 @@ export interface TickEvent {
       code: string;
       name: string;
       score: number;
+      /** 现价：与因子分同屏两套数字，必须各有名字，别再混 */
+      price: number;
       gainPct: number;
       volumeRatio: number;
       priceVsVwapBps: number;

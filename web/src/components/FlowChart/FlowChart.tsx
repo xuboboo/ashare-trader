@@ -65,7 +65,8 @@ export default function FlowChart({ events, latest }: { events: TickEvent[]; lat
         <thead>
           <tr>
             <th>标的</th>
-            <th>分</th>
+            <th>分(因子)</th>
+            <th>现价</th>
             <th>涨幅</th>
             <th>量比</th>
             <th>vs均线</th>
@@ -75,7 +76,7 @@ export default function FlowChart({ events, latest }: { events: TickEvent[]; lat
         <tbody>
           {top.length === 0 ? (
             <tr className="empty">
-              <td colSpan={6}>
+              <td colSpan={7}>
                 {latest ? `${fmtInt(latest.scan.scored)} 支打分，${fmtInt(latest.scan.rejected)} 支被否决` : "还没有数据"}
               </td>
             </tr>
@@ -86,6 +87,7 @@ export default function FlowChart({ events, latest }: { events: TickEvent[]; lat
                   {c.name} <span className="muted">{c.code}</span>
                 </td>
                 <td>{c.score.toFixed(2)}</td>
+                <td>{fmtPrice(c.price)}元</td>
                 <td className="up">{c.gainPct.toFixed(2)}%</td>
                 <td>{c.volumeRatio.toFixed(2)}</td>
                 <td className={c.priceVsVwapBps >= 0 ? "up" : "down"}>

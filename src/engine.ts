@@ -454,6 +454,8 @@ export class Engine {
         code: s.features.code,
         name: s.features.name,
         score: round2(s.score),
+        // 现价单独列出来：面板曾把因子分 2.83 误读成股价 2.83 元（2026-09-23），同屏两套数字必须各有名字
+        price: round2(s.features.price),
         gainPct: round2(s.features.gainPct),
         volumeRatio: round2(s.features.volumeRatio),
         priceVsVwapBps: Math.round(s.features.priceVsVwapBps),
