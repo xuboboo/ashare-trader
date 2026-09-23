@@ -471,6 +471,8 @@ export class Engine {
     const cancelledOrders: SuggestedOrder[] = [];
     let decision: Decision | null = null;
     let sellDecision: Decision | null = null;
+    /** 资金不足的轮次在备注里直说，别让面板上只留下一排无法执行的“买入” */
+    let cashNote = "";
 
     if (force || trading) {
       if ((trading || force) && clock.minutes >= config.session.premarketMin && this.biasDate !== clock.date) {
@@ -599,6 +601,7 @@ export class Engine {
           }
         }
 
+        const cashGateInfo = this.cashGate(scored);
         // 盘前预选只出观点；连续竞价与 force（复盘）出建议单
         if (force || actionable) {
           const resting = restingKeys(this.pending);
@@ -609,6 +612,9 @@ export class Engine {
           // 只执行最前面的那个；其余的要等下一轮模型用新鲜行情重新确认。
           // 真人不会同一分钟无脑连买三只 —— 每笔入场都该是当下独立确认的判断。
           let buysThisRound = 0;
+          // 按可用资金缩小单笔规模：现金 1399 时按 3300 预算建的单会被资金闸静默扔掉，
+          // 每 12s 重复一次"买入却买不进"（2026-09-23 盘中实测）。上限语义不变：钱多也不超 SIZE_CNY。
+          const sizeCny = Math.min(config.sizeCny, availableCash(this.book.cash, this.pending));
           for (const pick of decision?.picks ?? []) {
             if (buysThisRound >= config.maxBuysPerRound) break;
             // 新仓冷却：距上一笔开仓不足 MIN_OPEN_GAP_MS 就不开新仓（一轮只动一个决定，贴近人）。
@@ -620,7 +626,7 @@ export class Engine {
             // 已持仓的不重复加仓（与回测的 openPositions.has(code) 同一口径）
             if (this.book.positions.has(s.features.code)) continue;
             const vetoReason = this.bias?.vetoes[s.features.code];
-            const order = makeBuyOrder(s, clock, vetoReason, config.sizeCny, this.atrMap.get(s.features.code));
+            const order = makeBuyOrder(s, clock, vetoReason, sizeCny, this.atrMap.get(s.features.code));
             if (!order) continue;
             order.decidedBy = decision?.trace?.source ?? "unknown";
             order.decisionProb = pick.probability;
@@ -634,6 +640,9 @@ export class Engine {
               this.pending.set(order.signalId, order);
               this.lastOpenMs = nowMs; // 只有真注册成在途单（会开仓）才重置冷却计时
             }
+          }
+          if (actionable && buysThisRound === 0 && decision?.picks?.length && !cashGateInfo.ok) {
+            cashNote = ` | 现金 ${Math.round(cashGateInfo.cashForBuy)}元 不足最小一手 ${Math.round(cashGateInfo.cheapestLot)}元，买入不执行`;
           }
           if (register && newOrders.length) await this.persistPending();
         }
@@ -727,7 +736,7 @@ export class Engine {
         tapesMs,
         modelMs: Math.round((decision?.latencyMs ?? 0) + (sellDecision?.latencyMs ?? 0)),
       },
-      note: this.note(trading, phase, ok, roundMs, ageSec, quotesFresh, this.zt.known),
+      note: this.note(trading, phase, ok, roundMs, ageSec, quotesFresh, this.zt.known) + cashNote,
     };
     this.attach(event);
     return event;
@@ -744,10 +753,20 @@ export class Engine {
     });
   }
 
+  /** 现金闸：买得起最便宜的一手才算"可买"。signalState 的 allowed.buy 与轮次备注共用。 */
+  private cashGate(scored: Scored[]): { cheapestLot: number; cashForBuy: number; ok: boolean } {
+    const cheapestLot = cheapestLotCost(scored);
+    const cashForBuy = availableCash(this.book.cash, this.pending);
+    return { cheapestLot, cashForBuy, ok: cheapestLot === 0 || cashForBuy >= cheapestLot };
+  }
+
   private signalState(clock: EngineClock, scored: Scored[], gate: Gate, mode: "buy" | "sell", risk: RiskBrake): SignalState {
     const held = [...this.book.positions.values()];
     const buysToday = this.book.openDateCount(clock.date);
     const openSlots = Math.max(0, config.maxDailyOpens - buysToday);
+    // 现金闸前移：连最便宜的一手都买不起时不再问模型 —— 问了也只是往流水里灌一排
+    // 永远执行不了的“买入”（2026-09-23 盘中实测：现金 1399、单笔预算 3300，每 12s 重复一次）。
+    const cash = this.cashGate(scored);
     const positions = held.flatMap((p) => {
       const sn = this.snapshots.get(p.code);
       if (p.sellable <= 0 || !sn || !(sn.price > 0)) return [];
@@ -771,7 +790,7 @@ export class Engine {
       candidates: scored,
       heldCodes: held.map((p) => p.code),
       allowed: {
-        buy: mode === "buy" && gate.allowed && (this.bias?.allowOpen ?? true) && openSlots > 0 && !risk.buyBlocked,
+        buy: mode === "buy" && gate.allowed && (this.bias?.allowOpen ?? true) && openSlots > 0 && !risk.buyBlocked && cash.ok,
         sell: positions.length > 0,
       },
       vetoes: this.bias?.vetoes ?? {},
@@ -1268,6 +1287,22 @@ export function canOpenNewPosition(nowMs: number, lastOpenMs: number, gapMs: num
  */
 export function premarketFullPool(minutes: number): boolean {
   return minutes >= config.session.callAuctionEnd && minutes < config.session.morningStart;
+}
+
+/**
+ * 买得起“最便宜的一只一手”所需的现金下限（费用按最低佣金预留）。
+ * 低于这个数，任何候选的买入都落不了地 —— 别再去问模型，问了也只是往流水里
+ * 灌一排永远执行不了的“买入”（2026-09-23 盘中实测踩中：现金 1399、单笔预算 3300）。
+ * 没有可买候选时返回 0（那种情况本来就会在别处跳过）。
+ */
+export function cheapestLotCost(scored: Scored[]): number {
+  let min = Number.POSITIVE_INFINITY;
+  for (const s of scored) {
+    if (s.rejects.length) continue;
+    const lot = s.features.price * 100;
+    if (lot > 0 && lot < min) min = lot;
+  }
+  return Number.isFinite(min) ? min + config.commissionMin : 0;
 }
 
 /**

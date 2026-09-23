@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { config } from "../src/config";
-import { buyDecisionDue, premarketFullPool, remainingSlots } from "../src/engine";
+import { buyDecisionDue, cheapestLotCost, premarketFullPool, remainingSlots } from "../src/engine";
+import type { Scored } from "../src/factors";
 
 /**
  * 全程决策调度：盘前每日一次预选，连续竞价全程按节奏，其余时段不跑。
@@ -97,6 +98,20 @@ describe("并发持仓上限（MAX_POSITIONS，0=不限）", () => {
 
   test("手工回填让持仓超过上限时不出负数", () => {
     expect(remainingSlots(4, 5, 3)).toBe(0);
+  });
+});
+
+describe("现金闸（买不起最便宜的一手就不问模型）", () => {
+  const cand = (price: number) =>
+    ({ features: { price, code: "600000", name: "测" }, score: 1, reasons: [], rejects: [] }) as unknown as Scored;
+
+  test("取可买候选的最低一手，另预留最低佣金", () => {
+    expect(cheapestLotCost([cand(30), cand(3)])).toBe(305); // 3 元 × 100 股 + 5 元最低佣金
+  });
+
+  test("候选全被否决 -> 0（那种情况本来就会在别处跳过，不该拦住卖出）", () => {
+    const rejected = { ...cand(3), rejects: ["停牌"] } as unknown as Scored;
+    expect(cheapestLotCost([rejected])).toBe(0);
   });
 });
 
