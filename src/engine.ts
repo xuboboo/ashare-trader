@@ -775,7 +775,7 @@ export class Engine {
         sell: positions.length > 0,
       },
       vetoes: this.bias?.vetoes ?? {},
-      openSlots: Math.min(openSlots, config.k - held.length),
+      openSlots: remainingSlots(openSlots, held.length, config.maxPositions),
       decisionMode: mode,
       positions,
     };
@@ -1178,7 +1178,7 @@ export class Engine {
         config.stopMode === "atr"
           ? `次日止损触发线 −ATR×${config.atrK}（封底 −10%）`
           : `次日止损触发线 −${config.stopLossPct}%`,
-      maxPositions: config.k,
+      maxPositions: config.maxPositions,
       entryRule:
         config.model === "factor"
           ? `规则打分排序，取前 ${config.k} 只`
@@ -1268,6 +1268,16 @@ export function canOpenNewPosition(nowMs: number, lastOpenMs: number, gapMs: num
  */
 export function premarketFullPool(minutes: number): boolean {
   return minutes >= config.session.callAuctionEnd && minutes < config.session.morningStart;
+}
+
+/**
+ * 还能开几仓：当日开仓余量与并发持仓上限取小。
+ * maxPositions <= 0 表示不限仓 —— 此时只剩当日开仓次数与现金闸在约束。
+ * 返回值不会为负（手工回填可能让持仓数超过上限）。
+ */
+export function remainingSlots(opensLeftToday: number, heldCount: number, maxPositions: number): number {
+  const afterCap = maxPositions > 0 ? maxPositions - heldCount : Number.MAX_SAFE_INTEGER;
+  return Math.max(0, Math.min(opensLeftToday, afterCap));
 }
 
 /** 影子对照里单个模型的判断结果（只留可比字段，理由/延迟这类不进流水）。 */

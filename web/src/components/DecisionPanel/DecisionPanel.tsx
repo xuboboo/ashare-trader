@@ -76,6 +76,8 @@ export default function DecisionPanel({ event, history, latest, meta, nowMs }: P
   const entryRule = meta?.entryRule ?? `规则打分排序，取前 ${meta?.maxPositions ?? 3} 只`;
   const window = meta?.openWindow ?? "09:30–14:57";
   const maxPos = meta?.maxPositions ?? 3;
+  // MAX_POSITIONS=0 表示不限仓：直说"持仓不限"，不要显示"最多 0 仓"这种自相矛盾的文案
+  const maxPosLabel = maxPos > 0 ? `最多 ${maxPos} 仓` : "持仓不限";
 
   const recent = history.slice(-8).reverse();
   return (
@@ -91,7 +93,7 @@ export default function DecisionPanel({ event, history, latest, meta, nowMs }: P
       <div className="decisionLabel">常设命令 · STANDING ORDER</div>
       <div className="decisionOrder">
         {`> 盘前预选一次；开仓窗口 ${window}，全程按节奏决策。${entryRule}。
-> 普通 A 股 T+1；退出时点由 Jev 自主判断。本金 ¥${bankroll} · 单笔上限 ¥${size} · 最多 ${maxPos} 仓 · ${stop}。
+> 普通 A 股 T+1；退出时点由 Jev 自主判断。本金 ¥${bankroll} · 单笔上限 ¥${size} · ${maxPosLabel} · ${stop}。
 > Jev 全程判断买入与可裁量卖出；止损、T+1、涨跌停和交易时段是系统硬边界，不允许模型绕过。`}
       </div>
 

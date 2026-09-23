@@ -43,6 +43,8 @@ export const config = {
   bankrollCny: num("CNY_BANKROLL", 150_000),
   sizeCny: num("SIZE_CNY", 50_000),
   k: num("K", 3),
+  /** 并发持仓上限；0 = 不限（只剩当日开仓次数与现金闸在约束）。与 K 分开：K 是每轮取前几只。 */
+  maxPositions: num("MAX_POSITIONS", 3),
   maxDailyOpens: num("MAX_DAILY_OPENS", 4),
   /** 每个决策轮最多执行几个新买入（默认 1）：一轮评估出的多个 pick 不再同轮齐买，
    *  后续入场必须由模型在下一轮用新鲜行情重新确认 —— 真人不会同一分钟无脑买三只。 */

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { config } from "../src/config";
-import { buyDecisionDue, premarketFullPool } from "../src/engine";
+import { buyDecisionDue, premarketFullPool, remainingSlots } from "../src/engine";
 
 /**
  * 全程决策调度：盘前每日一次预选，连续竞价全程按节奏，其余时段不跑。
@@ -82,6 +82,23 @@ describe("买入决策调度（盘前预选 + 全程节奏）", () => {
     expect(premarketFullPool(570)).toBe(false); // 09:30 已开盘，连续竞价分支全量拉
     expect(premarketFullPool(700)).toBe(false); // 午休
   });
+
+describe("并发持仓上限（MAX_POSITIONS，0=不限）", () => {
+  test("不限仓：只剩当日开仓余量在约束", () => {
+    expect(remainingSlots(4, 3, 0)).toBe(4);
+    expect(remainingSlots(0, 3, 0)).toBe(0);
+  });
+
+  test("设了上限：持仓已满 -> 0；未满 -> 当日余量与剩余槽位取小（旧的最多 3 仓行为）", () => {
+    expect(remainingSlots(4, 3, 3)).toBe(0);
+    expect(remainingSlots(4, 1, 3)).toBe(2);
+    expect(remainingSlots(1, 1, 3)).toBe(1);
+  });
+
+  test("手工回填让持仓超过上限时不出负数", () => {
+    expect(remainingSlots(4, 5, 3)).toBe(0);
+  });
+});
 
   test("force 无视一切节奏（手动 /scan 随时可看一轮决策）", () => {
     expect(buyDecisionDue({ ...base, lastBuyMs: 1_000_000, force: true })).toBe(true);
