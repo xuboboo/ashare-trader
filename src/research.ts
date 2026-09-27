@@ -6,7 +6,7 @@
  * v2 manifest 只描述 Jev 自主退出所需的可见数据与观测边界；
  * 不再把固定 10:00 写进生产研究协议。旧 v1 是 legacy，禁止混入新标签。
  */
-import { join, isAbsolute, sep } from "node:path";
+import { join, sep } from "node:path";
 import { config } from "./config";
 import type { DailyBar } from "./quotes";
 
@@ -130,7 +130,12 @@ function validDate(s: unknown): s is string {
 }
 
 function validRelativePath(p: unknown): p is string {
-  if (typeof p !== "string" || !p || isAbsolute(p)) return false;
+  // 绝对路径判定必须与宿主 OS 无关：node:path 的 isAbsolute 在 Windows 上把 "E:/outside"
+  // 认成绝对路径、在 Linux 上放行 —— 本地绿、CI 红（2026-09-23 起 CI 一直红在这个用例上）。
+  // 这里显式覆盖：盘符路径（C:...）与 POSIX/UNC 的前导分隔符（charCode 47 = 斜杠，92 = 反斜杠）。
+  if (typeof p !== "string" || !p) return false;
+  const first = p.charCodeAt(0);
+  if (first === 47 || first === 92 || /^[A-Za-z]:/.test(p)) return false;
   const normalized = p.split(/[\\/]+/).join(sep);
   return !normalized.split(sep).includes("..");
 }
