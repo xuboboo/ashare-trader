@@ -421,7 +421,7 @@ export class Engine {
     }
     // 涨停池：只在连续竞价时段现采，与决策同节奏（每 DECIDE_EVERY_MS 一次，纯规则不花模型）。
     // 旧实现每天只盘前跑一次，而 09:05 当日涨停数必然是 0 → 该否决项永远不生效。
-    if (trading && liveQuotes(phase) && Date.now() - this.lastZtMs >= config.decideEveryMs) await this.refreshZt(clock.date);
+    if (trading && liveQuotes(phase) && Date.now() - this.lastZtMs >= config.ztRefreshMs) await this.refreshZt(clock.date);
     const gate = marketGate(
       { price: index.price, amountYi: index.amountYi },
       this.indexMa5,
@@ -1206,7 +1206,7 @@ export class Engine {
           : config.model === "jev"
             ? `Jev 净胜概率 ≥${Math.round(config.jevMinProb * 100)}%（未校准）`
             : `本地模型净胜概率 ≥${Math.round(config.jevMinProb * 100)}%（留出集校准）`,
-      openWindow: `${hhmmOf(config.session.morningStart + config.openDelayMin)}–${hhmmOf(config.session.afternoonEnd)}`,
+      openWindow: `${hhmmOf(config.session.entryStartMin)}–${hhmmOf(config.session.afternoonEnd)}`,
     };
   }
 
@@ -1238,16 +1238,17 @@ function triggerOf(phase: Phase, minutes: number): string {
   if (phase === "call-auction" || phase === "no-cancel") return "集合竞价";
   if (!canTrade(phase)) return phase === "lunch" ? "午休" : "心跳";
   if (minutes < config.session.morningStart + 30) return "退出窗口";
-  if (minutes >= config.session.tailStart) return "尾盘决策";
+  if (minutes >= config.session.entryStartMin) return "尾盘决策";
   return "盘中决策";
 }
 
 /**
  * 买入决策这一轮该不该跑。纯函数，单测覆盖：
  *  - 盘前（09:05 到开盘）每个交易日一次预选，用最近收盘快照；
- *  - 连续竞价全程按 DECIDE_EVERY_MS 节奏决策（不再只限尾盘）；
+ *  - 连续竞价内、ENTRY_START（默认 14:45）之后才按 DECIDE_EVERY_MS 节奏决策开新仓；
+ *    实盘入场窗口必须与回测证据同一时刻，否则 forward 流水评的不是同一个策略；
  *  - 集合竞价/午休/收盘竞价/非交易日不跑（价格不可靠或没有意义）；
- *  - force（手动 /scan）无视节奏。
+ *  - force（手动 /scan）无视节奏与窗口（复盘不产生可成交委托）。
  */
 export function buyDecisionDue(a: {
   force: boolean;
@@ -1268,6 +1269,9 @@ export function buyDecisionDue(a: {
   if (!a.trading) return false;
   // 盘前预选窗口：集合竞价 09:25 定型后到开盘前（此时开盘价已确定，竞价信息真实可得）
   if (premarketFullPool(a.minutes)) return !a.preBuyDone;
+  // 入场窗口：只在与回测同一时刻（ENTRY_START，默认 14:45）之后开新仓。
+  // 收回「09:30 起全程出单」的实盘行为，是因为那个口径没有任何同构回测（详见 .env 注释）。
+  if (a.minutes < config.session.entryStartMin) return false;
   // 开盘稳定期：连续竞价开始后的前 OPEN_DELAY_MIN 分钟不开新仓（退出管理照常）
   if (a.minutes < config.session.morningStart + config.openDelayMin) return false;
   // 事件触发：可买候选集一变化就在 15 秒内响应（"看情况冲"），15s 下限防 API 哄抢。

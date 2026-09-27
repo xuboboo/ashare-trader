@@ -4,8 +4,8 @@ import { buyDecisionDue, cheapestLotCost, premarketFullPool, remainingSlots } fr
 import type { Scored } from "../src/factors";
 
 /**
- * 全程决策调度：盘前每日一次预选，连续竞价全程按节奏，其余时段不跑。
- * 时钟全部显式注入，测试不依赖真实时间。
+ * 调度：盘前每日一次预选（只出观点）；连续竞价内、ENTRY_START（默认 14:45）之后才开新仓；
+ * 其余时段不跑。时钟全部显式注入，测试不依赖真实时间。
  */
 const base = {
   force: false,
@@ -13,15 +13,15 @@ const base = {
   liveNow: true, // liveQuotes(phase) = continuous
   usable: true,
   scoredCount: 10,
-  minutes: 600, // 10:00
+  minutes: 890, // 14:50，在入场窗口内
   preBuyDone: false,
   lastBuyMs: 0,
   nowMs: 1_000_000,
   codesChanged: false,
 };
 
-describe("买入决策调度（盘前预选 + 全程节奏）", () => {
-  test("连续竞价：首次必跑，之后按 DECIDE_EVERY_MS 节奏（随环境可变）", () => {
+describe("买入决策调度（盘前预选 + 尾盘入场窗口）", () => {
+  test("入场窗口内：首次必跑，之后按 DECIDE_EVERY_MS 节奏（随环境可变）", () => {
     expect(buyDecisionDue(base)).toBe(true); // lastBuyMs=0 → 从未跑过
     const ran = { ...base, lastBuyMs: 1_000_000 };
     expect(buyDecisionDue(ran)).toBe(false); // 刚跑过
@@ -38,18 +38,15 @@ describe("买入决策调度（盘前预选 + 全程节奏）", () => {
     expect(buyDecisionDue({ ...base, minutes: 545, liveNow: false })).toBe(false); // 09:05 竞价未定型，无活价
   });
 
-  test("开盘稳定期：窗口内不出新买入单，窗口外恢复（随 OPEN_DELAY_MIN 可变）", () => {
-    const delay = config.openDelayMin;
-    if (delay > 0) {
-      // 设了稳定期：09:31（开盘后 1 分钟）在窗口内 → 不出买入单
-      expect(buyDecisionDue({ ...base, minutes: 571 })).toBe(false);
-      expect(buyDecisionDue({ ...base, minutes: 570 + delay - 1 })).toBe(false);
-    } else {
-      // 稳定期=0（2026-09-23 用户拍板）：09:31 开盘即可按节奏决策
-      expect(buyDecisionDue({ ...base, minutes: 571 })).toBe(true);
-    }
-    // 稳定期结束的那一分钟起，一定恢复决策
-    expect(buyDecisionDue({ ...base, minutes: 570 + delay + 1 })).toBe(true);
+  test("入场窗口：ENTRY_START 之前一律不开新仓，到点即恢复（随 ENTRY_START 可变）", () => {
+    const at = config.session.entryStartMin;
+    // 09:31 / 10:00 / 14:44（窗口前一刻）：一律不出买入单。
+    // 这条钉住的是 2026-09-28 的决定：收回「09:30 起全程入场」，因为那个口径没有同构回测。
+    expect(buyDecisionDue({ ...base, minutes: 571 })).toBe(false);
+    expect(buyDecisionDue({ ...base, minutes: 600 })).toBe(false);
+    expect(buyDecisionDue({ ...base, minutes: at - 1 })).toBe(false);
+    // 入场时刻起恢复决策
+    expect(buyDecisionDue({ ...base, minutes: at })).toBe(true);
   });
 
   test("集合竞价/午休/收盘竞价不跑买入（价格不可靠）", () => {
@@ -64,16 +61,17 @@ describe("买入决策调度（盘前预选 + 全程节奏）", () => {
     expect(buyDecisionDue({ ...base, trading: false, force: true })).toBe(true);
   });
 
-  test("候选集变化（新票进区间）→ 15 秒内立即响应，不受常规节奏限制", () => {
+  test("候选集变化触发再决策；事件下限与基础节奏各自生效", () => {
     const ran = { ...base, lastBuyMs: 1_000_000 };
-    // 20 秒前刚决策过，但有新票冲进区间 → "看情况"立即再决策（20s > 15s 下限）
+    // 20 秒前刚决策过，但有新票冲进区间 → "看情况"立即再决策（20s > 15s 事件下限）
     expect(buyDecisionDue({ ...ran, codesChanged: true, nowMs: ran.lastBuyMs + 20_000 })).toBe(true);
     // 候选集没变 → 守 DECIDE_EVERY_MS 节奏（具体值随 .env 变，所以只比阈值本身）
     const cad = config.decideEveryMs;
     expect(buyDecisionDue({ ...ran, codesChanged: false, nowMs: ran.lastBuyMs + cad })).toBe(true);
     expect(buyDecisionDue({ ...ran, codesChanged: false, nowMs: ran.lastBuyMs + cad - 1 })).toBe(false);
-    // 事件触发也有 15 秒下限，防 API 哄抢
-    expect(buyDecisionDue({ ...ran, codesChanged: true, nowMs: ran.lastBuyMs + 5_000 })).toBe(false);
+    // codesChanged 但不足事件下限时：基础节奏更短则按基础节奏跑，否则不跑
+    const pre = { ...ran, codesChanged: true, nowMs: ran.lastBuyMs + 15_000 - 1 };
+    expect(buyDecisionDue(pre)).toBe(cad <= 15_000 - 1);
   });
 
   test("事件触发不得绕过行情新鲜度（拿隔夜快照问模型 = 落不了地的单）", () => {

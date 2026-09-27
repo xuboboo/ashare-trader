@@ -16,7 +16,7 @@
  *   bun run scripts/backtest.ts --sweep
  */
 import { join } from "node:path";
-import { config, hhmm } from "../src/config";
+import { config } from "../src/config";
 import { roundTrip } from "../src/costs";
 import { nextDayExit, stopLevel } from "../src/exit";
 import { featuresFromDaily, marketGate, scoreStock, type FactorParams, type Scored } from "../src/factors";
@@ -28,8 +28,8 @@ import { hhmmOf, tradingElapsedMin } from "../src/session";
 import { assertResearchReady } from "../src/research";
 import { loadSharesCache } from "../src/shares";
 
-/** 回测模拟的入场时刻：尾盘下单。闸门的时间折算与成交时间都用它，不再写死两处。 */
-const ENTRY_AT = hhmm("14:45", 885);
+/** 回测模拟的入场时刻：与实盘 ENTRY_START 共用 config.session.entryStartMin，不再写死两处。 */
+const ENTRY_AT = config.session.entryStartMin;
 const ENTRY_LABEL = hhmmOf(ENTRY_AT);
 
 interface Args {

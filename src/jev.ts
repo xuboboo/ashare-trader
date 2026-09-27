@@ -49,15 +49,17 @@ export const defaultAsk: JevAsk = async ({ state, questions, timeoutMs }) => {
 
 /** 只过滤系统硬否决；score 只用于在超过请求上限时做确定性截断，不是最终排序/概率。 */
 export function eligible(s: SignalState, budgetCny: number = config.sizeCny): Scored[] {
-  return s.candidates
+  const sorted = s.candidates
     .filter(
       (c) =>
         c.rejects.length === 0 &&
         !cannotAffordLot(c.features.price, budgetCny) &&
         !(c.features.code in s.vetoes),
     )
-    .sort((a, b) => b.score - a.score || a.features.code.localeCompare(b.features.code))
-    .slice(0, config.jevMaxQuestions);
+    .sort((a, b) => b.score - a.score || a.features.code.localeCompare(b.features.code));
+  // JEV_MAX_QUESTIONS <= 0 = 不限量：全池都问。
+  const cap = config.jevMaxQuestions;
+  return cap > 0 ? sorted.slice(0, cap) : sorted;
 }
 
 /** 共享 state：买入候选与卖出持仓在同一次 Jev 请求中各自使用清晰的上下文。 */
@@ -160,7 +162,7 @@ export class JevModel implements Model {
 
   constructor(
     private ask: JevAsk = defaultAsk,
-    private opts: { apiKey?: string | null; dataDir?: string; budgetCny?: number } = {},
+    private opts: { apiKey?: string | null; dataDir?: string; budgetCny?: number; k?: number } = {},
   ) {}
 
   private get apiKey(): string | undefined | null {
@@ -169,6 +171,11 @@ export class JevModel implements Model {
 
   private get budgetCny(): number {
     return this.opts.budgetCny ?? config.sizeCny;
+  }
+
+  /** 每轮最多采纳几只。可注入，测试才不必跟着 .env 的 K 变。 */
+  private get maxPicks(): number {
+    return this.opts.k ?? config.k;
   }
 
   async decide(s: SignalState): Promise<Decision> {
@@ -283,7 +290,7 @@ export class JevModel implements Model {
     const picks: Pick[] = list
       .filter((c) => (probs.get(c.features.code) ?? 0) >= config.jevMinProb)
       .sort((a, b) => (probs.get(b.features.code) ?? 0) - (probs.get(a.features.code) ?? 0) || a.features.code.localeCompare(b.features.code))
-      .slice(0, Math.min(s.openSlots, config.k))
+      .slice(0, Math.min(s.openSlots, this.maxPicks))
       .map((c) => ({
         code: c.features.code,
         name: c.features.name,

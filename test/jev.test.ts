@@ -46,7 +46,7 @@ function fakeAsk(
 }
 
 const model = (ask: JevAsk, apiKey: string | null = "test-key") =>
-  new JevModel(ask, { apiKey, dataDir: TMP, budgetCny: 50_000 });
+  new JevModel(ask, { apiKey, dataDir: TMP, budgetCny: 50_000, k: 3 });
 
 afterAll(async () => {
   await rm(TMP, { recursive: true, force: true });
