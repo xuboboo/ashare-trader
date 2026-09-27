@@ -278,6 +278,12 @@ export function featuresFromSnapshot(s: Snapshot, date: string): StockFeatures {
 /**
  * 回测口径：只有日线时，VWAP 用 成交额/成交量(手*100) 近似，量比用 当日量/前 5 日均量。
  * 高低价只能给出一字板/触及的粗判，止损与退出用次日 OHLC 判断。
+ *
+ * mcapYi 是**调用方回推**的当日总市值（亿元）：= 总股本(亿股) × 当日收盘价。
+ * 日线数据本身没有股本字段，所以这里没法自己算；不传等于 0，此时
+ * `MIN_MCAP_YI` 这一项**不生效**（实盘会按它过滤）。调用方必须显式知道这个缺口：
+ * 有总股本缓存就传进来（见 src/shares.ts），没有就要在报告里标明"市值门槛未生效"，
+ * 绝不能让 0 冒充"市值 0 亿"、更不能让门槛静默失效。
  */
 export function featuresFromDaily(
   bar: DailyBar,
@@ -285,6 +291,7 @@ export function featuresFromDaily(
   avgVolume5Hands: number | undefined,
   name = "",
   code = "",
+  mcapYi = 0,
 ): StockFeatures {
   const prevClose = prevBar?.close ?? bar.open;
   const volumeYuanShares = bar.volumeHands * 100;
@@ -307,8 +314,8 @@ export function featuresFromDaily(
     vwap: round2(vwap),
     priceVsVwapBps: vwap > 0 ? ((bar.close - vwap) / vwap) * 10_000 : 0,
     amountYuan: bar.amountYuan,
-    mcapYi: 0, // 日线口径没有市值，minMcapYi 在回测里靠 rank by amount 兜住
-    floatMcapYi: 0,
+    mcapYi, // 由调用方回推（见函数说明）；0 = 本项门槛不生效，不是"市值 0 亿"
+    floatMcapYi: 0, // 日线口径没有流通市值；当前只用到总市值门槛
     turnoverPct: bar.turnoverPct,
     limitUp,
     limitDown,

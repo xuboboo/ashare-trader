@@ -15,6 +15,40 @@ export interface UniverseEntry {
   rank: number;
 }
 
+/** 榜单条目的最小形状（与 quotes.fetchTopByAmount 的返回一致）。 */
+export interface TopEntry {
+  code: string;
+  name: string;
+  amountYuan: number;
+}
+
+/**
+ * 纯函数：把"成交额榜单 + 自选"合成股票池（不碰网络，测试直接喂数据）。
+ *
+ * 自选必须**先占位**。旧实现先填榜单、再把 WATCHLIST 追加到队尾，最后统一
+ * `slice(0, UNIVERSE_SIZE)` —— 榜单通常已经填满，自选永远排在截断线之外，
+ * 于是 `WATCHLIST` 成了一条永不生效的配置（没有测试覆盖，2026-09-28 发现）。
+ * 这里改成：自选先入池，再用榜单补满。
+ * 自选在榜单里时沿用榜单的名字与成交额（这样 ST 自选也能被 `isSt` 认出来），
+ * 不在榜单里就用空名、成交额 0（仍然进得了池，只是照常受个股硬筛选约束）。
+ */
+export function buildUniverseEntries(top: TopEntry[], watchlist: string[], size: number): UniverseEntry[] {
+  const topByCode = new Map(top.map((t) => [t.code, t]));
+  const seen = new Set<string>();
+  const entries: UniverseEntry[] = [];
+  const push = (code: string, name: string, amountYuan: number) => {
+    if (!inScope(code) || isSt(name) || seen.has(code)) return;
+    seen.add(code);
+    entries.push({ code, name, amountYuan, rank: entries.length + 1 });
+  };
+  for (const code of watchlist) {
+    const t = topByCode.get(code);
+    push(code, t?.name ?? "", t?.amountYuan ?? 0);
+  }
+  for (const t of top) push(t.code, t.name, t.amountYuan);
+  return entries.slice(0, size);
+}
+
 export class Universe {
   entries: UniverseEntry[] = [];
   date = "";
@@ -44,18 +78,9 @@ export class Universe {
 
   async refresh(date: string): Promise<void> {
     try {
-      // 多取一些，留出被 ST/停牌挤掉的名额
+      // 多取一些，留出被 ST/停牌挤掉的名额。自选先占位、榜单再补满（见 buildUniverseEntries）
       const top = await fetchTopByAmount(Math.max(config.universeSize * 2, 100));
-      const seen = new Set<string>();
-      const entries: UniverseEntry[] = [];
-      const push = (code: string, name: string, amountYuan: number) => {
-        if (!inScope(code) || isSt(name) || seen.has(code)) return;
-        seen.add(code);
-        entries.push({ code, name, amountYuan, rank: entries.length + 1 });
-      };
-      for (const t of top) push(t.code, t.name, t.amountYuan);
-      for (const code of config.watchlist) push(code, "", 0);
-      this.entries = entries.slice(0, config.universeSize);
+      this.entries = buildUniverseEntries(top, config.watchlist, config.universeSize);
       this.date = date;
       this.refreshedAt = Date.now();
       this.lastError = null;

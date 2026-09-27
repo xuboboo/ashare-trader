@@ -92,8 +92,10 @@
 `factors.ts` 暴露两个构造函数，把不同数据源压成同一个 `StockFeatures`：
 
 - `featuresFromSnapshot(snap, date)` —— 盘中：量比、分时均价直接来自接口
-- `featuresFromDaily(bar, prevBar, avgVol5, name, code)` —— 回测：量比 = 当日量 / 前 5 日均量，
-  VWAP = 成交额 / (成交量 × 100)，涨跌停价按板别规则自己算
+- `featuresFromDaily(bar, prevBar, avgVol5, name, code, mcapYi)` —— 回测：量比 = 当日量 / 前 5 日均量，
+  VWAP = 成交额 / (成交量 × 100)，涨跌停价按板别规则自己算；
+  `mcapYi`（当日总市值，亿元）由调用方用总股本缓存回推（`src/shares.ts`），不传时
+  `MIN_MCAP_YI` 在日线口径下不生效 —— 调用方必须在报告里显式标明，不能让它静默失效
 
 `scoreStock(features, boosters, useBoosters, params)` 只吃 `StockFeatures`，
 所以**喂同样的输入必然得到同样的分数与否决理由** —— `test/consistency.test.ts` 钉的就是这一条。

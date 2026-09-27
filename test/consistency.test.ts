@@ -93,6 +93,14 @@ describe("回测/实盘同一口径", () => {
     expect(avgVolumeBefore(many, "2026-09-18", 5)).toBeCloseTo(bar.volumeHands, 6);
   });
 
+  test("日线口径的总市值由调用方传入：不传=0（门槛不生效），传了就带上", () => {
+    expect(featuresFromDaily(bar, prevBar, avg5, "测试股份", "600000").mcapYi).toBe(0);
+    expect(featuresFromDaily(bar, prevBar, avg5, "测试股份", "600000", 88).mcapYi).toBe(88);
+    // 带上低市值后，同一个 scoreStock 会按 MIN_MCAP_YI 否决
+    const poor = scoreStock(featuresFromDaily(bar, prevBar, avg5, "测试股份", "600000", 10));
+    expect(poor.rejects.join()).toContain("市值");
+  });
+
   /**
    * 口径层的差异（不是 bug，是事实）：10:00 的快照与同一天的日线必然给出不同的结果。
    * 把这件事写成断言，是为了让它不能“靠巧合通过”，也能在有人把阈值改成更敏感时先炸。

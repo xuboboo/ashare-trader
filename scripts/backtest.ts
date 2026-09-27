@@ -26,6 +26,7 @@ import { Book, makeFill, round2 } from "../src/state";
 import { inScope, limitPct } from "../src/symbols";
 import { hhmmOf, tradingElapsedMin } from "../src/session";
 import { assertResearchReady } from "../src/research";
+import { loadSharesCache } from "../src/shares";
 
 /** 回测模拟的入场时刻：尾盘下单。闸门的时间折算与成交时间都用它，不再写死两处。 */
 const ENTRY_AT = hhmm("14:45", 885);
@@ -76,13 +77,21 @@ export interface Stock {
   code: string;
   bars: DailyBar[];
   byDate: Map<string, DailyBar>;
+  /**
+   * 总股本（亿股），用于把日线回测的市值门槛补上。
+   * 来源见 src/shares.ts（腾讯 L1 的总市值/现价回推）；缺省 = 没有，
+   * 此时 MIN_MCAP_YI 在回测里不生效，报告里会显式标出来。
+   */
+  sharesYi?: number;
 }
 
-/** 读本地日线（data/daily/*.json），训练脚本与回测共用。 */
+/** 读本地日线（data/daily/*.json）+ 总股本缓存（data/cache/shares.json），训练脚本与回测共用。 */
 export async function loadStocks(): Promise<Stock[]> {
   const dir = join(config.dataDir, "daily");
+  const shares = await loadSharesCache();
   const out: Stock[] = [];
   let estimated = 0;
+  let withShares = 0;
   for await (const f of new Bun.Glob("*.json").scan({ cwd: dir })) {
     const code = f.replace(/\.json$/, "");
     if (code.startsWith("_") || !inScope(code)) continue;
@@ -90,9 +99,18 @@ export async function loadStocks(): Promise<Stock[]> {
     const bars: DailyBar[] = j?.bars ?? [];
     if (bars.length < 70) continue;
     if (j?.amountEst) estimated++;
-    out.push({ code, bars, byDate: new Map(bars.map((b) => [b.date, b])) });
+    const sharesYi = shares?.entries?.[code] ?? (Number.isFinite(j?.sharesYi) ? (j.sharesYi as number) : undefined);
+    if (sharesYi && sharesYi > 0) withShares++;
+    out.push({ code, bars, byDate: new Map(bars.map((b) => [b.date, b])), sharesYi });
   }
   if (estimated) console.log(`注意：${estimated}/${out.length} 支的成交额是用 (高+低+收)/3 估算的（腾讯/新浪没有这个字段）`);
+  if (withShares) {
+    console.log(`市值门槛：${withShares}/${out.length} 支有总股本缓存，历史总市值 = 总股本 × 前复权收盘价（送转被前复权吸收，增发/回购有误差）`);
+  } else {
+    console.warn(
+      "⚠ 没有总股本缓存：MIN_MCAP_YI 在本次回测不生效（实盘会按它过滤）——先跑 bun run scripts/fetch-shares.ts；在此之前回测/实盘在市值这一项上不等价",
+    );
+  }
   out.sort((a, b) => b.bars.length - a.bars.length);
   return out;
 }
@@ -125,6 +143,10 @@ export interface BtResult {
   blockedByRiskDays: number;
   /** 数据结束时还持着的仓（当日买入 T+1 卖不掉）：买入成本已计、本金未进分母，净期望因此偏保守 */
   openAtEnd: number;
+  /** 有多少支股票带总股本数据（>0 才说明 MIN_MCAP_YI 真的参与了筛选） */
+  mcapCoveredStocks: number;
+  /** 因总市值低于 MIN_MCAP_YI 被否决的候选次数 */
+  mcapRejected: number;
   days: number;
   /** 每一笔往返，用于审计 T+1 与逐笔归因 */
   trips: { code: string; entryDate: string; exitDate: string; entry: number; exit: number; qty: number; bps: number; note: string }[];
@@ -165,6 +187,8 @@ export interface SimInput {
   gainMax?: number;
   vrMin?: number;
   minAmountYi?: number;
+  /** 总市值下限（亿元）；不传取 config.minMcapYi。没有 sharesYi 的样本此项不生效 */
+  minMcapYi?: number;
   quiet?: boolean;
 }
 
@@ -188,7 +212,7 @@ export function simulate(input: SimInput): { result: BtResult; log: string[] } {
     gainMaxPct: a.gainMax,
     volumeRatioMin: a.vrMin,
     minAmountYi: a.minAmountYi,
-    minMcapYi: config.minMcapYi,
+    minMcapYi: input.minMcapYi ?? config.minMcapYi,
   };
   const log: string[] = [];
   const P = (s: string) => {
@@ -212,6 +236,9 @@ export function simulate(input: SimInput): { result: BtResult; log: string[] } {
   const openPositions = new Map<string, { qty: number; entry: number; entryDate: string; stop: number }>();
   let skippedAtLimit = 0;
   let blockedByRisk = 0;
+  /** 有总股本数据的股票数：>0 时 MIN_MCAP_YI 才真的在筛 */
+  const mcapCoveredStocks = stocks.filter((s) => (s.sharesYi ?? 0) > 0).length;
+  let mcapRejected = 0;
   let costYuan = 0;
   let grossProfitYuan = 0;
   let notionalYuan = 0; // 每笔卖出时压在风险上的本金
@@ -359,9 +386,14 @@ export function simulate(input: SimInput): { result: BtResult; log: string[] } {
         const bar = s.bars[bi]!;
         const prevBar = s.bars[bi - 1];
         const av5 = vol5.get(s.code)?.[bi];
-        const f = featuresFromDaily(bar, prevBar, av5, s.code, s.code);
+        // 日线没有市值字段，用总股本 × 当日收盘价回推（前复权口径，见 src/shares.ts）
+        const mcapYi = s.sharesYi && s.sharesYi > 0 ? s.sharesYi * bar.close : 0;
+        const f = featuresFromDaily(bar, prevBar, av5, s.code, s.code, mcapYi);
         const sc = scoreStock(f, {}, false, fp);
-        if (sc.rejects.length) continue;
+        if (sc.rejects.length) {
+          if (mcapYi > 0 && sc.rejects.some((r) => r.includes("市值"))) mcapRejected++;
+          continue;
+        }
         scored.push(sc);
       }
       const ranked = [...scored];
@@ -496,6 +528,7 @@ export function simulate(input: SimInput): { result: BtResult; log: string[] } {
   const roundTripBps = roundTrip(a.sizeCny).bps;
   const params =
     `K=${a.k} 涨幅 ${a.gainMin}-${a.gainMax}% 量比≥${a.vrMin} 成交额≥${a.minAmountYi}亿 ` +
+    `市值≥${fp.minMcapYi}亿${mcapCoveredStocks ? "" : "(未生效：无总股本缓存)"} ` +
     `选股${input.select ?? "score"} 单笔${sizeLabel} 入场${ENTRY_LABEL} 止损${input.stopMode === "atr" ? `ATR×${atrK}(封底10%)` : `${stopLossPct}%`} ` +
     `高开减半≥${gapTrimPct}% 日开仓≤${maxDailyOpens} 往返成本名义${roundTripBps.toFixed(1)}bp ` +
     `风控闸${dayLossPct > 0 || drawdownPct > 0 ? `开(日亏${dayLossPct}%/回撤${drawdownPct}%)` : "关"}`;
@@ -521,6 +554,8 @@ export function simulate(input: SimInput): { result: BtResult; log: string[] } {
     skippedAtLimit,
     blockedByRiskDays: blockedByRisk,
     openAtEnd: book.positions.size,
+    mcapCoveredStocks,
+    mcapRejected,
     days: dates.length,
     trips,
     passed,
@@ -538,6 +573,11 @@ export function simulate(input: SimInput): { result: BtResult; log: string[] } {
   P(`期末权益  ${result.finalEquity} 元   总收益 ${result.totalReturnPct}%   年化 ${result.annualizedPct}%   最大回撤 ${result.maxDrawdownPct}%`);
   P(`封板跳过  ${result.skippedAtLimit} 次（涨停买不进 / 一字跌停卖不出）`);
   P(`风控空仓  ${result.blockedByRiskDays} 个交易日因日亏损/回撤闸停止开仓；期末尚持 ${result.openAtEnd} 仓（T+1 卖不掉，买入成本已计但本金未进分母 → 净期望偏保守）`);
+  if (mcapCoveredStocks > 0) {
+    P(`市值门槛  总市值≥${fp.minMcapYi}亿：${mcapCoveredStocks}/${stocks.length} 支有总股本数据，因市值被否 ${mcapRejected} 次`);
+  } else {
+    P(`市值门槛  ⚠ 未生效：没有总股本缓存（实盘会按 ${fp.minMcapYi} 亿过滤）——先跑 bun run scripts/fetch-shares.ts`);
+  }
   if (result.blockedByRiskDays > 0)
     P(`        ⚠ 本轮是开闸口径：${result.blockedByRiskDays}/${result.days} 天没下注，成交腿只是完整样本的一部分 —— 上面的净期望不能当策略期望读（那要 --risk-gate=false 的数）`);
   P(`门槛      ${result.verdict}`);
@@ -607,6 +647,8 @@ function emptyResult(params: string, bankrollCny = config.bankrollCny): BtResult
     skippedAtLimit: 0,
     blockedByRiskDays: 0,
     openAtEnd: 0,
+    mcapCoveredStocks: 0,
+    mcapRejected: 0,
     days: 0,
     trips: [],
     passed: false,

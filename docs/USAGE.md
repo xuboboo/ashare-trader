@@ -132,7 +132,7 @@ bun run start
 | `SLIPPAGE_TICKS` | 1 | 只在盘口整本缺失时兜底；正常影子成交直接吃对手价（买吃卖一、卖打买一） |
 | `GAIN_MIN_PCT` / `GAIN_MAX_PCT` | 3 / 7 | 涨幅区间 |
 | `VOLUME_RATIO_MIN` | 1.5 | 量比下限 |
-| `MIN_AMOUNT_YI` / `MIN_MCAP_YI` | 2 / 60 | 成交额与市值门槛（市值只在实盘快照路径生效，日线口径没有该字段） |
+| `MIN_AMOUNT_YI` / `MIN_MCAP_YI` | 2 / 60 | 成交额与市值门槛（实盘走快照；日线口径用 `data/cache/shares.json` 的总股本 × 收盘价回推，先跑 `bun run scripts/fetch-shares.ts`，无缓存时该项不生效且报告会标明） |
 | `MIN_LIST_DAYS` | 60 | **回测数据层**生效：日线不够这个根数的股票直接不进样本（`fetch-daily`） |
 | `INDEX_MIN_AMOUNT_YI` | 3000 | 大盘闸门的上证成交额下限 |
 | `MODEL` | factor | `factor` = 规则打分；`local` = 本地概率模型（`bun run train`）；`jev` = 用 Jev 给每只候选出概率（失败 fail-closed HOLD，不降级 factor） |

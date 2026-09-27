@@ -19,8 +19,8 @@ function indexBars(): DailyBar[] {
   }));
 }
 
-function stock(bars: DailyBar[]): Stock {
-  return { code: "600000", bars, byDate: new Map(bars.map((b) => [b.date, b])) };
+function stock(bars: DailyBar[], sharesYi?: number): Stock {
+  return { code: "600000", bars, byDate: new Map(bars.map((b) => [b.date, b])), sharesYi };
 }
 
 const flat = (i: number, over: Partial<DailyBar> = {}): DailyBar => ({
@@ -104,6 +104,24 @@ describe("回测引擎", () => {
     const idx = indexBars().map((b) => ({ ...b, amountYuan: 1e11 }));
     const { result } = simulate({ stocks: [stock(setup())], indexBars: idx, k: 1, quiet: true });
     expect(result.trades).toBe(0);
+  });
+
+  test("日线口径也执行 MIN_MCAP_YI：总市值低于门槛 → 不买", () => {
+    // 5 亿股 × 10.5 元 ≈ 52.5 亿 < 60 亿门槛
+    const low = simulate({ stocks: [stock(setup(), 5)], indexBars: indexBars(), k: 1, quiet: true });
+    expect(low.result.mcapCoveredStocks).toBe(1);
+    expect(low.result.mcapRejected).toBeGreaterThanOrEqual(1);
+    expect(low.result.trades).toBe(0);
+    // 10 亿股 × 10.5 元 ≈ 105 亿 > 60 亿 → 照常买入
+    const ok = simulate({ stocks: [stock(setup(), 10)], indexBars: indexBars(), k: 1, quiet: true });
+    expect(ok.result.trades).toBe(1);
+  });
+
+  test("没有总股本数据时市值门槛不生效，但结果里标得出来（不静默）", () => {
+    const { result } = simulate({ stocks: [stock(setup())], indexBars: indexBars(), k: 1, quiet: true });
+    expect(result.trades).toBe(1); // 与旧行为一致：没有市值数据就不筛
+    expect(result.mcapCoveredStocks).toBe(0);
+    expect(result.mcapRejected).toBe(0);
   });
 });
 
