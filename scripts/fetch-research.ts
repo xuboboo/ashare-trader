@@ -39,6 +39,10 @@ const argNum = (name: string, fallback: number) => {
   const n = a ? Number(a.slice(name.length + 3)) : NaN;
   return Number.isFinite(n) ? n : fallback;
 };
+const argStr2 = (name: string, fallback: string) => {
+  const a = process.argv.find((s) => s.startsWith(`--${name}=`));
+  return a ? a.slice(name.length + 3) : fallback;
+};
 const argList = (name: string): string[] => {
   const a = process.argv.find((s) => s.startsWith(`--${name}=`));
   return a ? a.slice(name.length + 3).split(",").map((s) => s.trim()).filter(Boolean) : [];
@@ -46,6 +50,10 @@ const argList = (name: string): string[] => {
 const hasFlag = (name: string) => process.argv.includes(`--${name}`);
 
 const days = argNum("days", 800);
+// 数据来源必须如实写进 manifest：不同源（东财 push2his / 通达信 eltdx）就算都是 raw 也不可混装，
+// 否则 readiness 与事后复核无法判断这份日线到底从哪来。
+const dailySource = argStr2("daily-source", "eastmoney-push2his/fqt=0");
+const datasetName = argStr2("dataset", `ashare-daily-${bj().ymd}`);
 const root = researchRoot(config.dataDir);
 const universeDir = join(root, "universe");
 const dailyDir = join(root, "daily");
@@ -146,12 +154,12 @@ async function main() {
 
   const manifest: ResearchManifest = {
     schemaVersion: RESEARCH_SCHEMA_VERSION,
-    dataset: `ashare-daily-${today}`,
+    dataset: datasetName,
     timezone: "Asia/Shanghai",
     priceBasis: "raw",
     // universe 声明为实时 14:45 采集口径；bootstrap 不写池，待采集器逐日补真 14:45 快照。
     universe: { path: "universe", format: "date-json", pointInTime: true, asOfTime: "14:45", source: "record-research-minutes/tencent-l1/top-amount-at-14:45" },
-    daily: { path: "daily", format: "code-json", pointInTime: true, source: "eastmoney-push2his/fqt=0" },
+    daily: { path: "daily", format: "code-json", pointInTime: true, source: dailySource },
     minutes: { path: "minutes", format: "date-code-json", intervalMinutes: 1, source: "self-recorded/tencent-l1" },
     execution: { entryTime: "14:45", entryPrice: "ask", exitPrice: "bid", maxBarAgeSeconds: 60, decisionIntervalMinutes: 1 },
     labels: { policy: "jev-autonomous", censoring: "right" },
