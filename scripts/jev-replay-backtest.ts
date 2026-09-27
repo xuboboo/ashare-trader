@@ -13,7 +13,7 @@
  *   - 喂给 Jev 的是日线特征（缺盘中量比/VWAP 实时性），是"日线版 Jev"能力体检，不等于盘中引擎。
  *   - 候选池来自今天的股票池回溯，含幸存者偏差；只用于"Jev vs 随机同池对照"（同池内公平），不外推绝对收益。
  *
- * 用法：bun scripts/jev-replay-backtest.ts [--days=120] [--hold=5] [--thr=0.45] [--conc=6] [--jitter=0]
+ * 用法：bun scripts/jev-replay-backtest.ts [--days=120] [--hold=5] [--thr=0.45] [--conc=6] [--jitter=0] [--screen=strict|safety]
  */
 import { join } from "node:path";
 import { config } from "../src/config";
@@ -30,12 +30,24 @@ const argNum = (n: string, f: number) => {
   const v = a ? Number(a.slice(n.length + 3)) : NaN;
   return Number.isFinite(v) ? v : f;
 };
+const argStr = (n: string, f: string) => {
+  const a = process.argv.find((s) => s.startsWith(`--${n}=`));
+  return a ? a.slice(n.length + 3) : f;
+};
 
 const MAX_DAYS = argNum("days", 120);
 const HOLD = argNum("hold", 5);
 const THR = argNum("thr", config.jevMinProb);
 const CONC = argNum("conc", 6);
 const JITTER = argNum("jitter", 0); // 概率 ± 该值视为噪声带，测 Jev 输出稳定性
+/**
+ * 筛选口径：
+ *  - strict = 生产口径，硬筛选全过才进 Jev（默认，与实盘同构）。
+ *  - safety = 只保留安全/可执行否决（停牌/一字板/买不起），把 alpha 筛选（涨幅区间/量比/VWAP）
+ *    交给 Jev 在更宽的池子上判断。这是「把 alpha 筛选交给 Jev」的离线 A/B，
+ *    在实盘改动之前先回答它到底比 strict 强不强。
+ */
+const SCREEN = argStr("screen", "strict") as "strict" | "safety";
 
 const root = researchRoot(config.dataDir);
 const manifest = (await Bun.file(join(root, "manifest.json")).json()) as ResearchManifest;
@@ -77,7 +89,10 @@ const usableDates = allDates.filter((d) => {
   return false;
 });
 const dates = usableDates.slice(-MAX_DAYS);
-console.log(`载入 ${dailyByCode.size} 支 · 可回放交易日 ${dates.length}（近 ${MAX_DAYS}），hold=${HOLD}，成本=${costBps.toFixed(1)}bp，阈值=${THR}`);
+console.log(`载入 ${dailyByCode.size} 支 · 可回放交易日 ${dates.length}（近 ${MAX_DAYS}），hold=${HOLD}，成本=${costBps.toFixed(1)}bp，阈值=${THR}，筛选=${SCREEN}`);
+
+/** 安全/可执行类否决：必须保留，永不交给模型。alpha 类才是这个 A/B 的实验对象。 */
+const SAFETY_REJECT = /停牌|一字涨停|已封涨停/;
 
 function candidatesOn(date: string): Scored[] {
   const out: Scored[] = [];
@@ -86,9 +101,17 @@ function candidatesOn(date: string): Scored[] {
     if (bi === undefined || bi < 5) continue;
     const f = featuresFromDaily(bars[bi]!, bars[bi - 1], vol5.get(code)?.[bi], code, code);
     if (f.oneLineUp || f.suspended) continue;
+    if (cannotAffordLot(f.price, config.sizeCny)) continue;
     const sc = scoreStock(f, {}, false, fp);
-    if (sc.rejects.length || !(sc.score > 0) || cannotAffordLot(f.price, config.sizeCny)) continue;
-    out.push(sc);
+    if (SCREEN === "strict") {
+      if (sc.rejects.length || !(sc.score > 0)) continue;
+      out.push(sc);
+    } else {
+      // safety 口径：只留安全否决；alpha 否决清空，让 Jev 在宽池上决定。
+      // score 对被否决项恒为 -1，这里抬到 0（中性），避免把 -1 当成排序信息喂给模型。
+      if (sc.rejects.some((r) => SAFETY_REJECT.test(r))) continue;
+      out.push({ ...sc, rejects: [], score: Math.max(0, sc.score) });
+    }
   }
   return out.sort((a, b) => b.score - a.score || a.features.code.localeCompare(b.features.code));
 }
@@ -157,7 +180,7 @@ console.log();
 const mean = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0);
 const win = (xs: number[]) => (xs.length ? (xs.filter((x) => x > 0).length / xs.length) * 100 : 0);
 const avgMaxProb = acc.maxProbs.length ? mean(acc.maxProbs) : 0;
-console.log(`\n=== 历史回放结论（可结算交易日 ${acc.days}，hold=${HOLD}，成本=${costBps.toFixed(0)}bp，阈值=${THR}）===`);
+console.log(`\n=== 历史回放结论（可结算交易日 ${acc.days}，hold=${HOLD}，成本=${costBps.toFixed(0)}bp，阈值=${THR}，筛选=${SCREEN}）===`);
 console.log(`组别        平均净收益bp   胜率%    有样本的天数`);
 console.log(`Jev 选中    ${mean(acc.jev).toFixed(0).padStart(6)}      ${win(acc.jev).toFixed(0).padStart(4)}%    ${acc.jev.length}`);
 console.log(`随机基线    ${mean(acc.rand).toFixed(0).padStart(6)}      ${win(acc.rand).toFixed(0).padStart(4)}%    ${acc.rand.length}`);
