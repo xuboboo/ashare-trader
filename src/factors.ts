@@ -36,6 +36,10 @@ export interface StockFeatures {
   oneLineUp: boolean;
   oneLineDown: boolean;
   suspended: boolean;
+  /** 近 10 日平均振幅（(高-低)/昨收 的均值），由 factors-ext 从研究日线加载；缺 = 无数据 */
+  amp10?: number;
+  /** 今收在近 10 日高低区间内的位置（0=贴底，1=贴顶） */
+  rpos10?: number;
 }
 
 export interface Boosters {

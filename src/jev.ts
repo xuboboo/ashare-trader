@@ -87,6 +87,8 @@ export function buildState(
       volumeRatio: Number(c.features.volumeRatio.toFixed(2)),
       priceVsVwapBps: Math.round(c.features.priceVsVwapBps),
       turnoverPct: Number(c.features.turnoverPct.toFixed(2)),
+      amp10: c.features.amp10 != null ? Number(c.features.amp10.toFixed(4)) : null,
+      rpos10: c.features.rpos10 != null ? Number(c.features.rpos10.toFixed(4)) : null,
       amountYi: Number((c.features.amountYuan / 1e8).toFixed(2)),
       distanceToLimitUpBps: Math.round(((c.features.limitUp - c.features.price) / c.features.price) * 10_000),
       preScreenScore: Number(c.score.toFixed(2)),

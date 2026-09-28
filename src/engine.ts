@@ -9,6 +9,7 @@
  */
 import { config } from "./config";
 import { loadAtrMap } from "./atr";
+import { loadMomentumMap } from "./factors-ext";
 import { stopCounterfactual, summarizeStopCounterfactuals, type StopCounterfactual } from "./exit";
 import { appendFile, mkdir } from "node:fs/promises";
 import { basename, join } from "node:path";
@@ -121,6 +122,8 @@ export class Engine {
   private lastSellMs = 0;
   /** 上一次 eodOnly 恢复探测时刻 */
   private lastEodProbeMs = 0;
+  /** 近 10 日振幅与 10 日区间位置（factors-ext 从研究日线加载），给 Jev 作参考特征 */
+  private momentumMap = new Map<string, { amp10: number; rpos10: number }>();
   /** 个股 ATR₁₄（STOP_MODE=atr 用），init 与每日日切时各加载一次 */
   private atrMap: Map<string, number> = new Map();
   /** 最近一次风控闸判定（挂到事件上，面板可见） */
@@ -190,6 +193,7 @@ export class Engine {
     this.book.rollover(today);
     await this.loadPending(today);
     if (config.stopMode === "atr") this.atrMap = await loadAtrMap(today);
+    this.momentumMap = await loadMomentumMap(today);
     await this.universe.get(today);
     try {
       this.indexBars = await fetchIndexDaily(40); // 上证指数日线，算闸门用的 MA5
@@ -329,6 +333,7 @@ export class Engine {
       if (config.stopMode === "atr") {
         try {
           this.atrMap = await loadAtrMap(clock.date);
+          this.momentumMap = await loadMomentumMap(clock.date);
         } catch {
           /* ATR 表沿用旧的；个股缺失时 makeBuyOrder 自动回退 fixed */
         }
@@ -443,7 +448,13 @@ export class Engine {
     const scored: Scored[] = [];
     for (const sn of this.snapshots.values()) {
       if (!this.universe.entries.some((e) => e.code === sn.code)) continue;
-      scored.push(scoreStock(featuresFromSnapshot(sn, clock.date), {}, false, fp));
+      const s = scoreStock(featuresFromSnapshot(sn, clock.date), {}, false, fp);
+      const mo = this.momentumMap.get(s.features.code);
+      if (mo) {
+        s.features.amp10 = mo.amp10;
+        s.features.rpos10 = mo.rpos10;
+      }
+      scored.push(s);
     }
     const rejected = scored.filter((s) => s.rejects.length > 0).length;
     const top = [...scored]
