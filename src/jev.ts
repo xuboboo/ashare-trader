@@ -109,6 +109,15 @@ export function buildQuestions(s: SignalState, list: Scored[], costBps: number):
         `在扣除约 ${costBps.toFixed(1)}bp 的往返成本后，这笔交易的收益为正。` +
         `请独立判断该陈述，不要把候选的预筛分数当作概率。`,
     };
+    questions.rank = {
+      type: "choice",
+      instructions:
+        "以下是 " + list.length + " 只已通过硬筛选、当前可买的 A 股候选（选项即股票代码）：" +
+        list.map((c) => c.features.name + "(" + c.features.code + ")").join("、") +
+        "。候选的 amp10=近10日平均振幅，rpos10=今收在近10日高低区间内的位置(0贴底/1贴顶)。" +
+        "在同样的持有规则、T+1 与交易成本约束下，请判断：哪只未来表现最强？只回答选项（股票代码）。",
+      options: list.map((c) => c.features.code),
+    };
   });
   return questions;
 }
@@ -289,16 +298,37 @@ export class JevModel implements Model {
       };
     }
 
-    const picks: Pick[] = list
+    // 横截面选择题：Jev 指定的最强候选（若在候选内）优先入选。
+    // 这是为了绕开「布尔概率上不去 0.55 → 永不开仓」的死结：选择题是强制排序，不依赖绝对概率。
+    const rankAns = reply.answers["rank"];
+    const rawChoice = typeof rankAns?.choice === "string" ? rankAns.choice.trim() : "";
+    const choicePick = list.find((c) => c.features.code === rawChoice)?.features.code
+      ?? list.find((c) => rawChoice.includes(c.features.code))?.features.code
+      ?? null;
+
+    const passing = list
       .filter((c) => (probs.get(c.features.code) ?? 0) >= config.jevMinProb)
-      .sort((a, b) => (probs.get(b.features.code) ?? 0) - (probs.get(a.features.code) ?? 0) || a.features.code.localeCompare(b.features.code))
+      .sort((a, b) => (probs.get(b.features.code) ?? 0) - (probs.get(a.features.code) ?? 0) || a.features.code.localeCompare(b.features.code));
+    if (choicePick) {
+      const i = passing.findIndex((c) => c.features.code === choicePick);
+      if (i > 0) passing.unshift(...passing.splice(i, 1));
+      else if (i < 0) {
+        const c0 = list.find((c) => c.features.code === choicePick);
+        if (c0) passing.unshift(c0);
+      }
+    }
+    const picks: Pick[] = passing
       .slice(0, Math.min(s.openSlots, this.maxPicks))
       .map((c) => ({
         code: c.features.code,
         name: c.features.name,
         probability: probs.get(c.features.code) ?? 0,
         score: c.score,
-        reasons: [...c.reasons, `Jev 买入判定 ${(100 * (probs.get(c.features.code) ?? 0)).toFixed(0)}%`],
+        reasons: [
+          ...c.reasons,
+          `Jev 买入判定 ${(100 * (probs.get(c.features.code) ?? 0)).toFixed(0)}%`,
+          ...(choicePick === c.features.code ? ["Jev 横截面首选"] : []),
+        ],
       }));
     const best = Math.max(...probs.values());
     return {
@@ -306,6 +336,8 @@ export class JevModel implements Model {
       probabilities: { buy: picks.length ? best : 0, sell: 0, hold: picks.length ? 1 - best : 1 },
       probabilitySemantics: "model-prompt",
       picks,
+      candidateProbs: Object.fromEntries(probs),
+      choicePick,
       latencyMs: performance.now() - t0,
       late: false,
       inputTokens: reply!.inputTokens,

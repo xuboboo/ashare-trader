@@ -79,6 +79,10 @@ export interface Decision {
   modelFailed: boolean;
   /** 证明本轮到底由谁决定、是否真的调用了远端。 */
   trace?: DecisionTrace;
+  /** 全部候选的模型概率（含未入选者）：事后校准 JEV_MIN_PROB 与检验区分度用 */
+  candidateProbs?: Record<string, number>;
+  /** 横截面选择题 Jev 指定的最强候选代码；null = 未回答或不在候选内 */
+  choicePick?: string | null;
 }
 
 export interface Model {

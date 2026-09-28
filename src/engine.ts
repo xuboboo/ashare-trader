@@ -223,6 +223,7 @@ export class Engine {
   private async appendJournal(entry: {
     date: string; time: string; phase: string; executable: boolean;
     model: string; threshold: number; pool: string[]; picked: string[];
+    probs?: Record<string, number>; choicePick?: string | null;
   }): Promise<void> {
     await appendFile(this.journalFile(), JSON.stringify(entry) + "\n", "utf8");
   }
@@ -608,6 +609,8 @@ export class Engine {
               threshold: config.jevMinProb,
               pool: eligibleCodes,
               picked: (decision.picks ?? []).map((p) => p.code),
+              probs: decision.candidateProbs ?? {},
+              choicePick: decision.choicePick ?? null,
             });
           } catch {
             /* 记录失败不影响主流程 */
